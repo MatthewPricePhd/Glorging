@@ -1,21 +1,42 @@
-brcc32.exe -fo .\Assets.RES .\Assets\Assets.rc
-brcc32.exe -fo .\Misc.RES .\Misc\Misc.rc
+@echo off
+setlocal
 
-brcc32.exe -fo .\Cursors.RES .\Cursors\Cursors.rc
-brcc32.exe -fo .\Sounds.RES .\Sounds\Sounds.rc
-brcc32.exe -fo .\Particles.RES .\Particles\Particles.rc
-brcc32.exe -fo .\Custom.RES .\Custom\Custom.rc
+call :compile_if_exists ".\Assets\Assets.rc" ".\Assets.RES"
+call :compile_if_exists ".\Misc\Misc.rc" ".\Misc.RES"
 
-brcc32.exe -fo .\Orig.RES .\Styles\orig\orig.rc
-brcc32.exe -fo .\Orig_music.RES .\Styles\orig\Music\orig_music.rc
+call :compile_if_exists ".\Cursors\Cursors.rc" ".\Cursors.RES"
+call :compile_if_exists ".\Sounds\Sounds.rc" ".\Sounds.RES"
+call :compile_if_exists ".\Particles\Particles.rc" ".\Particles.RES"
+call :compile_if_exists ".\Custom\Custom.rc" ".\Custom.RES"
 
-brcc32.exe -fo .\Ohno.RES .\Styles\ohno\ohno.rc
-brcc32.exe -fo .\Ohno_music.RES .\Styles\ohno\Music\ohno_music.rc
+call :compile_if_exists ".\Styles\Orig\orig.rc" ".\Orig.RES"
+call :compile_if_exists ".\Styles\Orig\Music\orig_music.rc" ".\Orig_music.RES"
 
-brcc32.exe -fo .\H94.RES .\Styles\h94\h94.rc
-brcc32.exe -fo .\H94_music.RES .\Styles\H94\Music\h94_music.rc
+call :compile_if_exists ".\Styles\Ohno\ohno.rc" ".\Ohno.RES"
+call :compile_if_exists ".\Styles\Ohno\Music\ohno_music.rc" ".\Ohno_music.RES"
 
-brcc32.exe -fo .\X91.RES .\Styles\x91\x91.rc
-brcc32.exe -fo .\X92.RES .\Styles\x92\x92.rc
+call :compile_if_exists ".\Styles\H94\h94.rc" ".\H94.RES"
+call :compile_if_exists ".\Styles\H94\Music\h94_music.rc" ".\H94_music.RES"
 
+call :compile_if_exists ".\Styles\X91\x91.rc" ".\X91.RES"
+call :compile_if_exists ".\Styles\X92\x92.rc" ".\X92.RES"
+
+echo.
+echo Done.
 pause
+exit /b 0
+
+:compile_if_exists
+set "rc=%~1"
+set "res=%~2"
+if not exist "%rc%" (
+  echo Skipping missing %rc%
+  exit /b 0
+)
+echo Building %res% from %rc%
+brcc32.exe -fo "%res%" "%rc%"
+if errorlevel 1 (
+  echo ERROR: Failed to build %res%
+  exit /b 1
+)
+exit /b 0

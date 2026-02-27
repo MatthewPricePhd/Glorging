@@ -22,3 +22,20 @@ Some technical history is in the Releases.txt at https://github.com/ericlangedij
 Hic sunt dracones, remember that.
 
 Eric
+
+## Build (Windows)
+
+1. Install Delphi 10.3+ (Community Edition should work).
+2. Open `src/Lemmix.dproj`.
+3. Build `Win32` (Release).
+4. Run the generated `Lemmix.exe` from `src`.
+
+If you changed `.rc` resource input files, run:
+
+`src/Data/BuildResources.bat`
+
+before rebuilding.
+
+## Community Modding
+
+See the full guide in `MODDING.md` for user-style folder layout, `Style.config` keys, and community asset workflow.

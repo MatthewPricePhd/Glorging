@@ -178,7 +178,7 @@ begin
     if not PathToStyles.IsEmpty then
       list.Values['PathToStyles'] := PathToStyles;
     // path
-    if not PathToStyles.IsEmpty then
+    if not PathToMusic.IsEmpty then
       list.Values['PathToMusic'] := PathToMusic;
     // path
     if not PathToSounds.IsEmpty then
