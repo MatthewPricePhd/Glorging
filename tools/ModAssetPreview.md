@@ -2,12 +2,36 @@
 
 Standalone UI preview for `Data\ModAssets` files without running `Lemmix.exe`.
 
+The preview tool now includes baseline export orchestration:
+
+- detects game install folders
+- ensures baseline assets exist for all five built-in styles (`Orig`, `Ohno`, `H94`, `X91`, `X92`)
+- runs `ModAssetBaselineExport.exe` automatically when baseline data is missing
+- defaults override editing to a game-loadable pack folder:
+  - `Data\ModAssets\Packs\Glorging`
+- includes quick actions:
+  - `Open Active Pack Folder`
+  - `Launch Game`
+
 ## Run
 
 From repo root:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\tools\ModAssetPreview.ps1
+```
+
+Or build and run launcher EXE:
+
+- project: `src/ModAssetPreviewLauncher.dproj`
+- exe: `ModAssetPreviewLauncher.exe`
+
+Optional:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\ModAssetPreview.ps1 `
+  -GameRoot "C:\Games\Glorging" `
+  -PackName "MyPack"
 ```
 
 Optional roots:
@@ -18,6 +42,10 @@ powershell -ExecutionPolicy Bypass -File .\tools\ModAssetPreview.ps1 `
   -ReferenceRoot "C:\path\to\Baseline\ModAssets"
 ```
 
+If `ReferenceRoot` is omitted, the tool tracks style selection and uses:
+
+- `<GameRoot>\Data\ModAssets\Baseline\<Style>`
+
 ## What it previews
 
 - UI backgrounds (`menu_background.png`, `loading_background.png`)
@@ -27,7 +55,7 @@ powershell -ExecutionPolicy Bypass -File .\tools\ModAssetPreview.ps1 `
 ## Visual diff
 
 - Set `Override Root` to your test assets.
-- Set `Reference Root` to a baseline asset export.
+- Set `Reference Root` to a baseline asset export (or leave auto-style reference enabled).
 - The tool shows:
   - Reference strip/frame
   - Override strip/frame

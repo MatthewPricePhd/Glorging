@@ -1,7 +1,9 @@
 param(
   [string]$OverrideRoot = "",
   [string]$ReferenceRoot = "",
-  [string]$StartAsset = ""
+  [string]$StartAsset = "",
+  [string]$GameRoot = "",
+  [string]$PackName = "Glorging"
 )
 
 Add-Type -AssemblyName System.Windows.Forms
@@ -11,9 +13,158 @@ Add-Type -AssemblyName System.Drawing
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = Resolve-Path (Join-Path $scriptDir "..")
+$styleNames = @("Orig", "Ohno", "H94", "X91", "X92")
+
+function Test-GameRoot {
+  param([string]$path)
+  if ([string]::IsNullOrWhiteSpace($path)) { return $false }
+  $root = [System.IO.Path]::GetFullPath($path)
+  return (Test-Path (Join-Path $root "Data\Styles") -PathType Container)
+}
+
+function Get-GameCandidates {
+  param([string]$repoRootPath)
+  $set = New-Object System.Collections.Generic.HashSet[string]([System.StringComparer]::OrdinalIgnoreCase)
+  $list = New-Object System.Collections.Generic.List[string]
+
+  $seed = @(
+    (Join-Path $repoRootPath "src"),
+    (Join-Path $repoRootPath "dist\Glorging-win32"),
+    (Join-Path $repoRootPath "runtime\upstream-2.1.0"),
+    $repoRootPath
+  )
+
+  foreach ($p in $seed) {
+    if (Test-GameRoot $p) {
+      $full = [System.IO.Path]::GetFullPath($p)
+      if ($set.Add($full)) { [void]$list.Add($full) }
+    }
+  }
+
+  try {
+    foreach ($d in (Get-ChildItem -Path $repoRootPath -Directory -Depth 2 -ErrorAction SilentlyContinue)) {
+      if (Test-GameRoot $d.FullName) {
+        $full = [System.IO.Path]::GetFullPath($d.FullName)
+        if ($set.Add($full)) { [void]$list.Add($full) }
+      }
+    }
+  } catch {}
+
+  return $list.ToArray()
+}
+
+function Ensure-Directory {
+  param([string]$path)
+  if (-not (Test-Path $path -PathType Container)) {
+    [void](New-Item -ItemType Directory -Path $path -Force)
+  }
+}
+
+function Test-BaselineReady {
+  param([string]$gameRootPath)
+  foreach ($style in $styleNames) {
+    $infoPath = Join-Path $gameRootPath ("Data\ModAssets\Baseline\{0}\EXPORT_INFO.txt" -f $style)
+    if (-not (Test-Path $infoPath -PathType Leaf)) { return $false }
+  }
+  return $true
+}
+
+function Resolve-ExporterExe {
+  param([string]$repoRootPath, [string]$gameRootPath)
+  $candidates = @(
+    (Join-Path $repoRootPath "src\ModAssetBaselineExport.exe"),
+    (Join-Path $gameRootPath "ModAssetBaselineExport.exe")
+  )
+  foreach ($c in $candidates) {
+    if (Test-Path $c -PathType Leaf) { return $c }
+  }
+  return $null
+}
+
+function Ensure-BaselineExportAllStyles {
+  param([string]$gameRootPath, [System.Windows.Forms.IWin32Window]$owner)
+  if (Test-BaselineReady $gameRootPath) { return $true }
+
+  $exporterExe = Resolve-ExporterExe -repoRootPath $repoRoot -gameRootPath $gameRootPath
+  if ($null -eq $exporterExe) {
+    [void][System.Windows.Forms.MessageBox]::Show(
+      $owner,
+      "Could not find ModAssetBaselineExport.exe.`nBuild src\ModAssetBaselineExport.dpr first.",
+      "Exporter Missing",
+      [System.Windows.Forms.MessageBoxButtons]::OK,
+      [System.Windows.Forms.MessageBoxIcon]::Error
+    )
+    return $false
+  }
+
+  $outDir = Join-Path $gameRootPath "Data\ModAssets\Baseline"
+  Ensure-Directory $outDir
+
+  $psi = New-Object System.Diagnostics.ProcessStartInfo
+  $psi.FileName = $exporterExe
+  $psi.WorkingDirectory = Split-Path -Parent $exporterExe
+  $psi.UseShellExecute = $false
+  $psi.CreateNoWindow = $true
+  $psi.RedirectStandardOutput = $true
+  $psi.RedirectStandardError = $true
+  $psi.Arguments = ('--game "{0}" --all-styles --out "{1}"' -f $gameRootPath, $outDir)
+
+  $proc = New-Object System.Diagnostics.Process
+  $proc.StartInfo = $psi
+  [void]$proc.Start()
+  $stdout = $proc.StandardOutput.ReadToEnd()
+  $stderr = $proc.StandardError.ReadToEnd()
+  $proc.WaitForExit()
+
+  if ($proc.ExitCode -ne 0 -or -not (Test-BaselineReady $gameRootPath)) {
+    $msg = "Baseline export failed.`n`nCommand:`n$exporterExe $($psi.Arguments)`n`nSTDOUT:`n$stdout`n`nSTDERR:`n$stderr"
+    [void][System.Windows.Forms.MessageBox]::Show(
+      $owner,
+      $msg,
+      "Export Failed",
+      [System.Windows.Forms.MessageBoxButtons]::OK,
+      [System.Windows.Forms.MessageBoxIcon]::Error
+    )
+    return $false
+  }
+
+  return $true
+}
+
+function Choose-GameRoot {
+  param([string[]]$candidates)
+  if ($candidates.Count -gt 0) { return $candidates[0] }
+  return $null
+}
+
+$candidateRoots = Get-GameCandidates -repoRootPath $repoRoot
+if (-not [string]::IsNullOrWhiteSpace($GameRoot) -and (Test-GameRoot $GameRoot)) {
+  $GameRoot = [System.IO.Path]::GetFullPath($GameRoot)
+} else {
+  $GameRoot = Choose-GameRoot -candidates $candidateRoots
+}
+
+if ([string]::IsNullOrWhiteSpace($GameRoot)) {
+  $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
+  $dialog.Description = "Select game install folder (must contain Data\Styles)"
+  if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK -and (Test-GameRoot $dialog.SelectedPath)) {
+    $GameRoot = [System.IO.Path]::GetFullPath($dialog.SelectedPath)
+  } else {
+    throw "No valid game install selected."
+  }
+}
 
 if ([string]::IsNullOrWhiteSpace($OverrideRoot)) {
-  $OverrideRoot = Join-Path $repoRoot "src\Data\ModAssets"
+  $OverrideRoot = Join-Path $GameRoot ("Data\ModAssets\Packs\{0}" -f $PackName)
+}
+
+Ensure-Directory $OverrideRoot
+Ensure-Directory (Join-Path $OverrideRoot "UI")
+Ensure-Directory (Join-Path $OverrideRoot "Lemmings")
+
+$script:autoReferenceByStyle = [string]::IsNullOrWhiteSpace($ReferenceRoot)
+if ($script:autoReferenceByStyle) {
+  $ReferenceRoot = Join-Path $GameRoot "Data\ModAssets\Baseline\Orig"
 }
 
 function New-AssetSpec {
@@ -197,7 +348,7 @@ $rootLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Wind
 $toolbar = New-Object System.Windows.Forms.TableLayoutPanel
 $toolbar.Dock = [System.Windows.Forms.DockStyle]::Top
 $toolbar.ColumnCount = 6
-$toolbar.RowCount = 3
+$toolbar.RowCount = 4
 $toolbar.AutoSize = $true
 $toolbar.Padding = New-Object System.Windows.Forms.Padding(8)
 $toolbar.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Absolute, 120)))
@@ -206,6 +357,37 @@ $toolbar.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.W
 $toolbar.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Absolute, 120)))
 $toolbar.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 50)))
 $toolbar.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Absolute, 120)))
+
+$gameLabel = New-Object System.Windows.Forms.Label
+$gameLabel.Text = "Game Install"
+$gameLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleLeft
+$gameLabel.Dock = [System.Windows.Forms.DockStyle]::Fill
+
+$gameCombo = New-Object System.Windows.Forms.ComboBox
+$gameCombo.Dock = [System.Windows.Forms.DockStyle]::Fill
+$gameCombo.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
+foreach ($r in $candidateRoots) { [void]$gameCombo.Items.Add($r) }
+if ($gameCombo.Items.IndexOf($GameRoot) -lt 0) { [void]$gameCombo.Items.Add($GameRoot) }
+$gameCombo.SelectedItem = $GameRoot
+
+$gameBrowse = New-Object System.Windows.Forms.Button
+$gameBrowse.Text = "Select..."
+$gameBrowse.Dock = [System.Windows.Forms.DockStyle]::Fill
+
+$styleLabel = New-Object System.Windows.Forms.Label
+$styleLabel.Text = "Preview Style"
+$styleLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleLeft
+$styleLabel.Dock = [System.Windows.Forms.DockStyle]::Fill
+
+$styleCombo = New-Object System.Windows.Forms.ComboBox
+$styleCombo.Dock = [System.Windows.Forms.DockStyle]::Fill
+$styleCombo.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
+foreach ($s in $styleNames) { [void]$styleCombo.Items.Add($s) }
+$styleCombo.SelectedItem = "Orig"
+
+$ensureBaselineButton = New-Object System.Windows.Forms.Button
+$ensureBaselineButton.Text = "Ensure Baseline"
+$ensureBaselineButton.Dock = [System.Windows.Forms.DockStyle]::Fill
 
 $overrideLabel = New-Object System.Windows.Forms.Label
 $overrideLabel.Text = "Override Root"
@@ -256,16 +438,32 @@ $frameLabel.Text = "Frame: 0 / 0"
 $frameLabel.AutoSize = $true
 $frameLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleLeft
 
+$openPackButton = New-Object System.Windows.Forms.Button
+$openPackButton.Text = "Open Active Pack Folder"
+$openPackButton.Dock = [System.Windows.Forms.DockStyle]::Fill
+
+$launchGameButton = New-Object System.Windows.Forms.Button
+$launchGameButton.Text = "Launch Game"
+$launchGameButton.Dock = [System.Windows.Forms.DockStyle]::Fill
+
 $toolbar.Controls.Add($overrideLabel, 0, 0)
 $toolbar.Controls.Add($overrideText, 1, 0)
 $toolbar.Controls.Add($overrideBrowse, 2, 0)
 $toolbar.Controls.Add($referenceLabel, 3, 0)
 $toolbar.Controls.Add($referenceText, 4, 0)
 $toolbar.Controls.Add($referenceBrowse, 5, 0)
-$toolbar.Controls.Add($reloadButton, 0, 1)
-$toolbar.Controls.Add($autoPlay, 1, 1)
-$toolbar.Controls.Add($frameSlider, 4, 1)
-$toolbar.Controls.Add($frameLabel, 5, 1)
+$toolbar.Controls.Add($gameLabel, 0, 1)
+$toolbar.Controls.Add($gameCombo, 1, 1)
+$toolbar.Controls.Add($gameBrowse, 2, 1)
+$toolbar.Controls.Add($styleLabel, 3, 1)
+$toolbar.Controls.Add($styleCombo, 4, 1)
+$toolbar.Controls.Add($ensureBaselineButton, 5, 1)
+$toolbar.Controls.Add($reloadButton, 0, 2)
+$toolbar.Controls.Add($autoPlay, 1, 2)
+$toolbar.Controls.Add($frameSlider, 4, 2)
+$toolbar.Controls.Add($frameLabel, 5, 2)
+$toolbar.Controls.Add($openPackButton, 0, 3)
+$toolbar.Controls.Add($launchGameButton, 1, 3)
 
 $mainSplit = New-Object System.Windows.Forms.SplitContainer
 $mainSplit.Dock = [System.Windows.Forms.DockStyle]::Fill
@@ -381,6 +579,34 @@ function Select-Folder {
   return $null
 }
 
+function Set-ReferenceRootForStyle {
+  param([string]$styleName)
+  if (-not $script:autoReferenceByStyle) { return }
+  $referenceText.Text = Join-Path $GameRoot ("Data\ModAssets\Baseline\{0}" -f $styleName)
+}
+
+function Open-ActivePackFolder {
+  $target = $overrideText.Text
+  if ([string]::IsNullOrWhiteSpace($target)) { return }
+  Ensure-Directory $target
+  Start-Process -FilePath "explorer.exe" -ArgumentList ('"{0}"' -f $target) | Out-Null
+}
+
+function Launch-GameExe {
+  $exe = Join-Path $GameRoot "Lemmix.exe"
+  if (-not (Test-Path $exe -PathType Leaf)) {
+    [void][System.Windows.Forms.MessageBox]::Show(
+      $form,
+      "Could not find Lemmix.exe in: $GameRoot",
+      "Launch Game",
+      [System.Windows.Forms.MessageBoxButtons]::OK,
+      [System.Windows.Forms.MessageBoxIcon]::Warning
+    )
+    return
+  }
+  Start-Process -FilePath $exe -WorkingDirectory $GameRoot | Out-Null
+}
+
 function Update-FramePreview {
   if ($null -eq $script:currentSpec) { return }
 
@@ -465,6 +691,8 @@ function Render-Selection {
   $ovrSizeTxt = if ($null -eq $script:currentOverrideStrip) { "missing" } else { "{0}x{1}" -f $script:currentOverrideStrip.Width, $script:currentOverrideStrip.Height }
 
   $statusLabel.Text = @(
+    ("Game: {0}" -f $GameRoot),
+    ("Style: {0}" -f $styleCombo.SelectedItem),
     ("Selected: {0}" -f $script:currentSpec.Display),
     ("Expected: {0}x{1} ({2} frame(s), {3}x{4} each)" -f $script:currentSpec.ExpectedW, $script:currentSpec.ExpectedH, $script:currentSpec.Frames, $script:currentSpec.FrameW, $script:currentSpec.FrameH),
     ("Reference: {0} [{1}] ({2})" -f $referencePath, $refSizeTxt, ($(if ($refSizeOk) { "OK" } else { "check" }))),
@@ -473,7 +701,7 @@ function Render-Selection {
   ) -join [Environment]::NewLine
 
   Update-FramePreview
-}
+} 
 
 $assetList.Add_SelectedIndexChanged({ Render-Selection })
 $reloadButton.Add_Click({ Render-Selection })
@@ -489,10 +717,66 @@ $overrideBrowse.Add_Click({
 $referenceBrowse.Add_Click({
   $picked = Select-Folder -initialPath $referenceText.Text
   if ($null -ne $picked) {
+    $script:autoReferenceByStyle = $false
     $referenceText.Text = $picked
     Render-Selection
   }
 })
+
+$gameBrowse.Add_Click({
+  $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
+  $dialog.Description = "Select game install folder (must contain Data\Styles)"
+  if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+    if (-not (Test-GameRoot $dialog.SelectedPath)) {
+      [void][System.Windows.Forms.MessageBox]::Show($form, "Invalid folder. Data\Styles not found.", "Invalid Game Folder", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+      return
+    }
+    $GameRoot = [System.IO.Path]::GetFullPath($dialog.SelectedPath)
+    if ($gameCombo.Items.IndexOf($GameRoot) -lt 0) { [void]$gameCombo.Items.Add($GameRoot) }
+    $gameCombo.SelectedItem = $GameRoot
+    if (Ensure-BaselineExportAllStyles -gameRootPath $GameRoot -owner $form) {
+      Set-ReferenceRootForStyle -styleName ([string]$styleCombo.SelectedItem)
+      if ([string]::IsNullOrWhiteSpace($overrideText.Text) -or $overrideText.Text -notlike "*\Data\ModAssets\Packs\*") {
+        $overrideText.Text = Join-Path $GameRoot ("Data\ModAssets\Packs\{0}" -f $PackName)
+      }
+      Ensure-Directory $overrideText.Text
+      Ensure-Directory (Join-Path $overrideText.Text "UI")
+      Ensure-Directory (Join-Path $overrideText.Text "Lemmings")
+      Render-Selection
+    }
+  }
+})
+
+$gameCombo.Add_SelectedIndexChanged({
+  $selected = [string]$gameCombo.SelectedItem
+  if (-not [string]::IsNullOrWhiteSpace($selected) -and (Test-GameRoot $selected)) {
+    $GameRoot = [System.IO.Path]::GetFullPath($selected)
+    [void](Ensure-BaselineExportAllStyles -gameRootPath $GameRoot -owner $form)
+    Set-ReferenceRootForStyle -styleName ([string]$styleCombo.SelectedItem)
+    if ([string]::IsNullOrWhiteSpace($overrideText.Text) -or $overrideText.Text -notlike "*\Data\ModAssets\Packs\*") {
+      $overrideText.Text = Join-Path $GameRoot ("Data\ModAssets\Packs\{0}" -f $PackName)
+      Ensure-Directory $overrideText.Text
+      Ensure-Directory (Join-Path $overrideText.Text "UI")
+      Ensure-Directory (Join-Path $overrideText.Text "Lemmings")
+    }
+    Render-Selection
+  }
+})
+
+$styleCombo.Add_SelectedIndexChanged({
+  Set-ReferenceRootForStyle -styleName ([string]$styleCombo.SelectedItem)
+  Render-Selection
+})
+
+$ensureBaselineButton.Add_Click({
+  if (Ensure-BaselineExportAllStyles -gameRootPath $GameRoot -owner $form) {
+    Set-ReferenceRootForStyle -styleName ([string]$styleCombo.SelectedItem)
+    Render-Selection
+  }
+})
+
+$openPackButton.Add_Click({ Open-ActivePackFolder })
+$launchGameButton.Add_Click({ Launch-GameExe })
 
 $frameSlider.Add_ValueChanged({
   $script:currentFrameIndex = $frameSlider.Value
@@ -526,6 +810,11 @@ $form.Add_FormClosed({
     if ($null -ne $pb.Image) { $pb.Image.Dispose(); $pb.Image = $null }
   }
 })
+
+if (-not (Ensure-BaselineExportAllStyles -gameRootPath $GameRoot -owner $form)) {
+  $statusLabel.Text = "Baseline export failed. Use 'Ensure Baseline' after fixing exporter/build."
+}
+Set-ReferenceRootForStyle -styleName ([string]$styleCombo.SelectedItem)
 
 if ($assetList.Items.Count -gt 0) {
   $startIndex = 0

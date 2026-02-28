@@ -6,7 +6,7 @@ interface
 
 uses
   Winapi.Windows,
-  System.Classes, System.SysUtils, System.Contnrs, System.Zip, System.Generics.Collections,
+  System.Classes, System.SysUtils, System.Contnrs, System.Zip, System.Generics.Collections, System.IOUtils,
   Vcl.Graphics, Vcl.Imaging.PngImage,
   GR32,
   Base.Utils, Base.Types,
@@ -36,6 +36,10 @@ type
     class var fCacheHits: Integer;
     class var fTotalCacheSize: Integer;
     class var fCache: TObjectDictionary<string, TBytesStream>;
+    class var fModName: string;
+    class var fModAssetsEnabled: Boolean;
+    class function GetModAssetsRoot: string; static;
+    class function GetPathToModAssets: string; static;
   public
     class constructor Create;
     class destructor Destroy;
@@ -48,6 +52,12 @@ type
     class function CreateAssetPngImage(const aFileName: string; preventCaching: Boolean = False): TPngImage; static;
 
     class function CreateLanguageStringList(const aFileName: string; preventCaching: Boolean = False): TStringList; static;
+    class function GetAvailableModNames: TArray<string>; static;
+    class procedure SetModName(const aModName: string); static;
+    class procedure ClearCache; static;
+    class property ModName: string read fModName;
+    class property ModAssetsEnabled: Boolean read fModAssetsEnabled write fModAssetsEnabled;
+    class property PathToModAssets: string read GetPathToModAssets;
   end;
 
 implementation
@@ -57,6 +67,8 @@ implementation
 class constructor TData.Create;
 begin
   fCache := TObjectDictionary<string, TBytesStream>.Create([doOwnsValues]);
+  fModName := string.Empty;
+  fModAssetsEnabled := True;
 end;
 
 class destructor TData.Destroy;
@@ -65,6 +77,101 @@ begin
   // we normally have a high hit rate, so caching is nice.
   // var s: string := fLoadRequests.ToString + ' / ' + fCacheHits.ToString;
   //MessageBox(0, PChar(s), 'requests/cachehits', 0);
+end;
+
+class procedure TData.ClearCache;
+begin
+  fCache.Clear;
+  fLoadRequests := 0;
+  fCacheHits := 0;
+  fTotalCacheSize := 0;
+end;
+
+class function TData.GetModAssetsRoot: string;
+var
+  candidate: string;
+begin
+  if not fModAssetsEnabled then
+    Exit(string.Empty);
+
+  Result := IncludeTrailingPathDelimiter(Consts.PathToData) + 'ModAssets\';
+  if TDirectory.Exists(Result) then
+    Exit;
+
+  candidate := IncludeTrailingPathDelimiter(ExpandFileName(Consts.AppPath + '..\..\Data\ModAssets\'));
+  if TDirectory.Exists(candidate) then begin
+    Result := candidate;
+    Exit;
+  end;
+
+  candidate := IncludeTrailingPathDelimiter(ExpandFileName(Consts.AppPath + '..\..\..\Data\ModAssets\'));
+  if TDirectory.Exists(candidate) then begin
+    Result := candidate;
+    Exit;
+  end;
+end;
+
+class function TData.GetPathToModAssets: string;
+var
+  packPath: string;
+begin
+  Result := GetModAssetsRoot;
+  if fModName.IsEmpty then
+    Exit;
+
+  packPath := Result + 'Packs\' + fModName + '\';
+  if TDirectory.Exists(packPath) then
+    Result := packPath;
+end;
+
+class procedure TData.SetModName(const aModName: string);
+var
+  candidate: string;
+begin
+  candidate := aModName.Trim;
+  if not candidate.IsEmpty then begin
+    var packPath := IncludeTrailingPathDelimiter(Consts.PathToData) + 'ModAssets\Packs\' + candidate + '\';
+    if not TDirectory.Exists(packPath) then
+      candidate := string.Empty;
+  end;
+
+  if SameText(fModName, candidate) then
+    Exit;
+
+  fModName := candidate;
+  ClearCache;
+end;
+
+class function TData.GetAvailableModNames: TArray<string>;
+var
+  root: string;
+  dirs: TArray<string>;
+  list: TStringList;
+begin
+  root := GetModAssetsRoot + 'Packs\';
+  if not TDirectory.Exists(root) then
+    Exit(nil);
+
+  dirs := TDirectory.GetDirectories(root);
+  list := TStringList.Create;
+  try
+    list.CaseSensitive := False;
+    list.Sorted := True;
+    list.Duplicates := dupIgnore;
+
+    for var dir in dirs do begin
+      var name := ExtractFileName(dir);
+      if name.IsEmpty then
+        Continue;
+      list.Add(name);
+    end;
+
+    SetLength(Result, list.Count);
+    for var i := 0 to list.Count - 1 do
+      Result[i] := list[i];
+  finally
+    list.Free;
+  end;
 end;
 
 class function TData.CreateDataStream(const aStyleName, aFileName: string; aType: TDataType; preventCaching: Boolean = False; disk: Boolean = False): TBytesStream;

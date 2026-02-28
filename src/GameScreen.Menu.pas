@@ -95,6 +95,7 @@ type
     ReelShift              : Integer;
   // internal
     procedure DrawBitmapElement(aElement: TGameMenuBitmap);
+    procedure TryApplyMenuBackgroundOverride;
     procedure DrawCorrectSoundBitmap;
     procedure SetSoundOptions(aOptions: TSoundOptions);
     procedure NextSoundSetting;
@@ -128,6 +129,8 @@ uses
   {$ifdef debug}
   Prog.Tools,
   {$endif}
+  System.IOUtils,
+  Vcl.Imaging.PngImage,
   Form.Base,
   GameScreen.ReplayFinder;
 
@@ -274,6 +277,7 @@ begin
 
     // background
     TileBackgroundBitmap(0, 0);
+    TryApplyMenuBackgroundOverride;
     BackBuffer.Assign(ScreenImg.Bitmap); // save it
 
     // menu elements
@@ -308,6 +312,34 @@ begin
   finally
     ScreenImg.EndUpdate;
     Tmp.Free;
+  end;
+end;
+
+procedure TGameMenuScreen.TryApplyMenuBackgroundOverride;
+const
+  OverrideWidth = 640;
+  OverrideHeight = 350;
+var
+  fileName: string;
+  png: TPngImage;
+  bmp: TBitmap32;
+begin
+  fileName := TData.PathToModAssets + 'UI\menu_background.png';
+  if not TFile.Exists(fileName) then
+    Exit;
+
+  png := TPngImage.Create;
+  bmp := TBitmap32.Create;
+  try
+    png.LoadFromFile(fileName);
+    bmp.FromPng(png);
+    if (bmp.Width <> OverrideWidth) or (bmp.Height <> OverrideHeight) then
+      Throw(Format('Invalid menu background dimensions (%dx%d). Expected %dx%d.',
+        [bmp.Width, bmp.Height, OverrideWidth, OverrideHeight]), 'TGameMenuScreen.TryApplyMenuBackgroundOverride');
+    bmp.DrawTo(ScreenImg.Bitmap, 0, 0);
+  finally
+    bmp.Free;
+    png.Free;
   end;
 end;
 

@@ -27,14 +27,26 @@ type
   private
     fGrid: TDrawGridEx;
     fInfoList: Consts.TStyleInformationList;
+    fModList: TStringList;
+    fModPanel: TPanelEx;
+    fModTitleLabel: TLabelEx;
+    fModInfoLabel: TLabelEx;
+    fModPathLabel: TLabelEx;
+    fModLabel: TLabelEx;
+    fModIndex: Integer;
     fNewStyleSelected: Boolean;
     procedure Form_KeyDown(Sender: TObject; var Key: Word; Shift: TShiftState);
+    procedure Form_KeyPress(Sender: TObject; var Key: Char);
     procedure Grid_DrawCell(Sender: TObject; aCol, aRow: Longint; aRect: TRect; aState: TGridDrawState);
     procedure Grid_CanSelectCell(Sender: TObject; aCol, aRow: Longint; var CanSelect: Boolean);
     procedure Grid_DblClick(Sender: TObject);
     function SelectedInfoToCell(info: Consts.TStyleInformation): TPoint;
     function CoordToLevelInfo(x, y: Integer): Consts.TStyleInformation;
     function GetCurrentInfo: Consts.TStyleInformation;
+    function CurrentModName: string;
+    function CurrentModPath: string;
+    procedure UpdateModLabel;
+    procedure NextMod;
     procedure DoExitScreen(ok: Boolean);
   protected
     procedure BuildScreen; override;
@@ -55,6 +67,13 @@ var
 begin
   inherited Create(aOwner);
   fInfoList := Consts.TStyleInformationList.Create(False);
+  fModList := TStringList.Create;
+  fModList.Add(string.Empty); // default ModAssets folder (non-pack)
+  for var modName in TData.GetAvailableModNames do
+    fModList.Add(modName);
+  fModIndex := fModList.IndexOf(TData.ModName);
+  if fModIndex < 0 then
+    fModIndex := 0;
   // sys
   for info in Consts.StyleInformationlist do
     if info.StyleDef <> TStyleDef.User then
@@ -71,6 +90,7 @@ end;
 
 destructor TGameScreenOptions.Destroy;
 begin
+  fModList.Free;
   fInfoList.Free;
   inherited Destroy;
 end;
@@ -84,6 +104,10 @@ begin
     var info: Consts.TStyleInformation := GetCurrentInfo;
     if Assigned(info) and (App.Style.Name <> info.Name) then begin
       App.NewStyleName := info.Name;
+      fNewStyleSelected := True;
+    end;
+    if not SameText(TData.ModName, CurrentModName) then begin
+      App.NewModName := CurrentModName;
       fNewStyleSelected := True;
     end;
     //CloseScreen(TGameScreenType.Menu);
@@ -117,30 +141,135 @@ begin
   fGrid.Col := p.X;
   fGrid.Row := p.Y;
 
-  fGrid.Margins.SetBounds(Scale(8), Scale(8), Scale(8), Scale(24));
+  fGrid.Margins.SetBounds(Scale(8), Scale(8), Scale(8), Scale(8));
   fGrid.OnDrawCell := Grid_DrawCell;
   fGrid.OnSelectCell := Grid_CanSelectCell;
   fGrid.OnDblClick := Grid_DblClick;
+  fGrid.OnKeyDown := Form_KeyDown;
+  fGrid.OnKeyPress := Form_KeyPress;
 
-  var lab: TLabelEx := TLabelEx.Create(Self);
-  lab.Parent := Self;
-  lab.AutoSize := False;
-  lab.Height := Scale(20);
-  lab.Align := alBottom;
-  lab.Alignment := taCenter;
-  lab.Font.Color := clgray;
-  lab.Font.Height := lab.Height - Scale(2);
-  lab.Caption := App.StyleCache.GetTotalLevelCount.ToString + ' levels';
+  fModPanel := TPanelEx.Create(Self);
+  fModPanel.Parent := Self;
+  fModPanel.Align := alBottom;
+  fModPanel.Height := Scale(108);
+  fModPanel.BevelOuter := bvNone;
+  fModPanel.Color := clWebDarkSlateBlue;
+  fModPanel.ParentBackground := False;
+
+  fModTitleLabel := TLabelEx.Create(Self);
+  fModTitleLabel.Parent := fModPanel;
+  fModTitleLabel.Align := alTop;
+  fModTitleLabel.Height := Scale(34);
+  fModTitleLabel.Alignment := taCenter;
+  fModTitleLabel.Layout := tlCenter;
+  fModTitleLabel.Font.Color := clWhite;
+  fModTitleLabel.Font.Style := [fsBold];
+  fModTitleLabel.Font.Height := Scale(26);
+
+  fModInfoLabel := TLabelEx.Create(Self);
+  fModInfoLabel.Parent := fModPanel;
+  fModInfoLabel.Align := alTop;
+  fModInfoLabel.Height := Scale(30);
+  fModInfoLabel.Alignment := taCenter;
+  fModInfoLabel.Layout := tlCenter;
+  fModInfoLabel.Font.Color := clSilver;
+  fModInfoLabel.Font.Height := Scale(18);
+
+  fModPathLabel := TLabelEx.Create(Self);
+  fModPathLabel.Parent := fModPanel;
+  fModPathLabel.Align := alClient;
+  fModPathLabel.Alignment := taCenter;
+  fModPathLabel.Layout := tlCenter;
+  fModPathLabel.Font.Color := clWebLightSteelBlue;
+  fModPathLabel.Font.Height := Scale(16);
+
+  fModLabel := TLabelEx.Create(Self);
+  fModLabel.Parent := Self;
+  fModLabel.AutoSize := False;
+  fModLabel.Height := Scale(20);
+  fModLabel.Align := alBottom;
+  fModLabel.Alignment := taCenter;
+  fModLabel.Font.Color := clgray;
+  fModLabel.Font.Height := fModLabel.Height - Scale(2);
+  UpdateModLabel;
 
   OnKeyDown := Form_KeyDown;
+  OnKeyPress := Form_KeyPress;
 end;
 
 procedure TGameScreenOptions.Form_KeyDown(Sender: TObject; var Key: Word; Shift: TShiftState);
 begin
-  if Key = VK_ESCAPE then
+  if (Key = Ord('M')) or (Key = Ord('m')) then
+    NextMod
+  else if Key = VK_ESCAPE then
     DoExitScreen(False)
   else if Key = VK_RETURN then
     DoExitScreen(True);
+end;
+
+procedure TGameScreenOptions.Form_KeyPress(Sender: TObject; var Key: Char);
+begin
+  if CharInSet(Key, ['m', 'M']) then begin
+    Key := #0;
+    NextMod;
+  end;
+end;
+
+function TGameScreenOptions.CurrentModName: string;
+begin
+  if (fModIndex >= 0) and (fModIndex < fModList.Count) then
+    Result := fModList[fModIndex]
+  else
+    Result := string.Empty;
+end;
+
+function TGameScreenOptions.CurrentModPath: string;
+begin
+  if CurrentModName.IsEmpty then
+    Result := IncludeTrailingPathDelimiter(Consts.PathToData) + 'ModAssets\'
+  else
+    Result := IncludeTrailingPathDelimiter(Consts.PathToData) + 'ModAssets\Packs\' + CurrentModName + '\';
+end;
+
+procedure TGameScreenOptions.UpdateModLabel;
+var
+  modText: string;
+begin
+  if not Assigned(fModLabel) then
+    Exit;
+  if CurrentModName.IsEmpty then
+    modText := '<Default>'
+  else
+    modText := CurrentModName;
+  if fModList.Count <= 1 then
+    fModLabel.Caption := App.StyleCache.GetTotalLevelCount.ToString + ' levels | Mod: ' + modText + ' (M to change, no extra packs found)'
+  else
+    fModLabel.Caption := App.StyleCache.GetTotalLevelCount.ToString + ' levels | Mod: ' + modText + ' (M to change)';
+
+  if Assigned(fModTitleLabel) then begin
+    if CurrentModName.IsEmpty then
+      fModTitleLabel.Caption := 'Modded Assets (Default)'
+    else
+      fModTitleLabel.Caption := CurrentModName;
+  end;
+
+  if Assigned(fModInfoLabel) then begin
+    if CurrentModName.IsEmpty then
+      fModInfoLabel.Caption := 'Using Data\\ModAssets overrides. Press M to cycle packs.'
+    else
+      fModInfoLabel.Caption := 'Mod pack override active. Press M to cycle.';
+  end;
+
+  if Assigned(fModPathLabel) then
+    fModPathLabel.Caption := CurrentModPath;
+end;
+
+procedure TGameScreenOptions.NextMod;
+begin
+  if fModList.Count = 0 then
+    Exit;
+  fModIndex := (fModIndex + 1) mod fModList.Count;
+  UpdateModLabel;
 end;
 
 function TGameScreenOptions.CoordToLevelInfo(x, y: Integer): Consts.TStyleInformation;

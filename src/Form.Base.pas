@@ -153,8 +153,24 @@ function TAppForm.ShowScreen(param: TObject = nil): TGameScreenType;
 // if the screen closed with alt+f4 (for example) it bypasses our logic, so we remap to unknown screen
 var
   res: TModalResult;
+  margin: Integer;
 begin
   App.FormBegin(Self);
+
+  if Assigned(App) and not App.Config.FormOptions.FullScreen then begin
+    BorderStyle := bsSizeable;
+    BorderIcons := [biSystemMenu, biMinimize, biMaximize];
+    margin := Scale(32);
+    Left := CurrentDisplay.BoundsRect.Left + margin;
+    Top := CurrentDisplay.BoundsRect.Top + margin;
+    Width := CurrentDisplay.BoundsRect.Width - margin * 2;
+    Height := CurrentDisplay.BoundsRect.Height - margin * 2;
+  end
+  else begin
+    BorderStyle := bsNone;
+    BorderIcons := [];
+    BoundsRect := CurrentDisplay.BoundsRect;
+  end;
 
   Input(param);
   BuildScreen;

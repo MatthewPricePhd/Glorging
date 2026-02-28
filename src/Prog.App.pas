@@ -17,7 +17,7 @@ vcl.Dialogs,
   Base.Utils, Base.Types,
   Styles.Base,
   Level.Base,
-  Prog.Base, Prog.Config, Prog.Cache, Prog.Voice,
+  Prog.Base, Prog.Config, Prog.Cache, Prog.Voice, Prog.Data,
   Game, Game.Sound, Game.Rendering;
 
 type
@@ -43,6 +43,7 @@ type
     TargetBitmap           : TBitmap32;                   // this is a reference only and filled in the player screen
     GameResult             : TGameResultsRec;             // this is retrieved from the game and copied by postview screen
     NewStyleName           : string;                      // can only be changed by options screen
+    NewModName             : string;                      // active ModAssets pack (empty = default)
     NewSectionIndex        : Integer;                     // quick and dirty
     NewLevelIndex          : Integer;                     // quick and dirty
     DebugLayerEnabled      : Boolean;
@@ -74,6 +75,8 @@ begin
   Consts.Init(Config.PathToStyles, Config.PathToMusic, Config.PathToSounds, Config.PathToReplay);
   Consts.SetStyleName(Config.StyleName);
   NewStyleName := Consts.StyleName; // prevent change
+  TData.SetModName(Config.ModName);
+  NewModName := TData.ModName;
   CurrentDisplay.MonitorIndex := Config.Monitor;
 
   NewSectionIndex := -1;
@@ -94,6 +97,7 @@ destructor TApp.Destroy;
 begin
 
   Config.StyleName := Consts.StyleName;
+  Config.ModName := TData.ModName;
   Config.Monitor := CurrentDisplay.MonitorIndex;
   Config.Save;
 

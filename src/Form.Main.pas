@@ -41,10 +41,12 @@ type
       );
   private
     fHourGlassCursor: HCURSOR;
+    fLoadingBackground: TImage;
     fLoadingLabel: TLabel;
     fCurrentParamString: string;
     fInterruptingMessageEnabled: Boolean;
     procedure CreateLoadingLabel;
+    procedure TryLoadLoadingBackground;
     procedure HideLoadingLabel;
     procedure LoadingFeedback(const state: string);
     procedure Form_Activate(Sender: TObject);
@@ -136,9 +138,18 @@ end;
 
 procedure TFormMain.CreateLoadingLabel;
 begin
+  fLoadingBackground := TImage.Create(Self);
+  fLoadingBackground.Parent := Self;
+  fLoadingBackground.Align := alClient;
+  fLoadingBackground.Visible := False;
+  fLoadingBackground.Stretch := True;
+  fLoadingBackground.Proportional := False;
+  TryLoadLoadingBackground;
+
   fLoadingLabel := TLabel.Create(Self);
   fLoadingLabel.Parent := Self;
   fLoadingLabel.AutoSize := false;
+  fLoadingLabel.Transparent := True;
   fLoadingLabel.Font.Color := clLime;
   fLoadingLabel.Font.Size := 16;
 
@@ -146,6 +157,17 @@ begin
   fLoadingLabel.WordWrap := False;
   fLoadingLabel.Layout := tlCenter;
   fLoadingLabel.Alignment := taCenter;
+end;
+
+procedure TFormMain.TryLoadLoadingBackground;
+var
+  fileName: string;
+begin
+  fileName := TData.PathToModAssets + 'UI\loading_background.png';
+  if not FileExists(fileName) then
+    Exit;
+  fLoadingBackground.Picture.LoadFromFile(fileName);
+  fLoadingBackground.Visible := True;
 end;
 
 destructor TFormMain.Destroy;
@@ -351,14 +373,42 @@ procedure TFormMain.SwitchToMonitor(index: Integer);
 // change boundsrect to monitor
 var
   appForm: TAppForm;
+  margin: Integer;
 begin
   if (index >= Screen.MonitorCount) or (index < 0) then
     index := 0;
   CurrentDisplay.MonitorIndex := index;
-  BoundsRect := CurrentDisplay.BoundsRect;
+  if App.Config.FormOptions.FullScreen then begin
+    BorderStyle := bsNone;
+    BorderIcons := [];
+    BoundsRect := CurrentDisplay.BoundsRect;
+  end
+  else begin
+    BorderStyle := bsSizeable;
+    BorderIcons := [biSystemMenu, biMinimize, biMaximize];
+    margin := Scale(32);
+    Left := CurrentDisplay.BoundsRect.Left + margin;
+    Top := CurrentDisplay.BoundsRect.Top + margin;
+    Width := CurrentDisplay.BoundsRect.Width - margin * 2;
+    Height := CurrentDisplay.BoundsRect.Height - margin * 2;
+  end;
+
   if Assigned(App.CurrentForm) and (App.CurrentForm is TAppForm) then begin
     appForm := TAppForm(App.CurrentForm);
-    appForm.BoundsRect := CurrentDisplay.BoundsRect;
+    if App.Config.FormOptions.FullScreen then begin
+      appForm.BorderStyle := bsNone;
+      appForm.BorderIcons := [];
+      appForm.BoundsRect := CurrentDisplay.BoundsRect;
+    end
+    else begin
+      appForm.BorderStyle := bsSizeable;
+      appForm.BorderIcons := [biSystemMenu, biMinimize, biMaximize];
+      margin := Scale(32);
+      appForm.Left := CurrentDisplay.BoundsRect.Left + margin;
+      appForm.Top := CurrentDisplay.BoundsRect.Top + margin;
+      appForm.Width := CurrentDisplay.BoundsRect.Width - margin * 2;
+      appForm.Height := CurrentDisplay.BoundsRect.Height - margin * 2;
+    end;
   end;
 end;
 
@@ -424,26 +474,30 @@ procedure TFormMain.Run;
       Speak(s, True);
     end;
 
-    procedure DoRecreateStyle(const aName: string);
+    procedure DoRecreateStyle(const aName, aModName: string);
     begin
       TempCursor.Activate;
       // we do *not* free the current style, because it is pooled
       FreeAndNil(App.GraphicSet);
       FreeAndNil(App.Level);
+      TData.SetModName(aModName);
       Consts.SetStyleName(aName);
       App.Style := TStyleFactory.CreateStyle(False);
       App.CurrentLevelInfo := App.Style.LevelSystem.FirstLevel;
       App.Level := Tlevel.Create;
       App.GraphicSet := TGraphicSet.Create(App.Style);
       App.NewStyleName := Consts.StyleName;
+      App.NewModName := TData.ModName;
       HideLoadingLabel;
       SpeakStyle(App.Style.StyleInformation);
     end;
 
-    procedure CheckRecreateStyle(const newName: string);
+    procedure CheckRecreateStyle(const newName, newModName: string);
     begin
-      if not Assigned(App.Style) or not SameText(App.Style.Name, newName) then
-        DoRecreateStyle(newName);
+      if not Assigned(App.Style)
+      or not SameText(App.Style.Name, newName)
+      or not SameText(TData.ModName, newModName) then
+        DoRecreateStyle(newName, newModName);
     end;
 
     procedure CheckGotoLevel;
@@ -479,9 +533,9 @@ procedure TFormMain.Run;
 
       // now we know which style to load
       if not isInterrupted then
-        DoRecreateStyle(Consts.StyleName)
+        DoRecreateStyle(Consts.StyleName, App.NewModName)
       else
-        CheckRecreateStyle(Consts.StyleName);
+        CheckRecreateStyle(Consts.StyleName, App.NewModName);
 
       // and now load the levelinformation from the current levelsystem
       if Assigned(cacheItem) and (startupFileType <> TStartupFiletype.None) then begin
@@ -545,8 +599,10 @@ begin
     {$endif}
 
     NewScreen := CheckLoad(False);
+    if not App.Config.FormOptions.FullScreen then
+      Hide; // keep the host form out of the way in windowed mode
     repeat
-      CheckRecreateStyle(App.NewStyleName); // recreate style if options screen -> menu screen changed it
+      CheckRecreateStyle(App.NewStyleName, App.NewModName); // recreate style if options screen changed it
       CheckGotoLevel;
 
       fInterruptingMessageEnabled := True;

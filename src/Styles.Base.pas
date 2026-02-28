@@ -7,7 +7,8 @@ unit Styles.Base;
 interface
 
 uses
-  System.Classes, System.SysUtils, System.Contnrs, System.Generics.Collections, System.Character,
+  System.Classes, System.SysUtils, System.Contnrs, System.Generics.Collections, System.Character, System.IOUtils,
+  Vcl.Imaging.PngImage,
   GR32,
   Base.Utils, Base.Types, Base.Bitmaps,
   Dos.Consts, Dos.Compression, Dos.Bitmaps, Dos.Structures,
@@ -138,6 +139,7 @@ type
     fMineMasksRTLBitmap       : TBitmap32; // ref
     fCountDownDigitsBitmap    : TBitmap32; // ref
     procedure InitMetadata;
+    procedure ApplyModAssetOverrides;
   public
     constructor Create(aStyle: TStyle);
     destructor Destroy; override;
@@ -537,11 +539,62 @@ begin
     fCountDownDigitsBitmap := fExtraBitmaps[5];
 
     fCountDownDigitsBitmap.ReplaceColor(clMask32, Pal[3]);
+    ApplyModAssetOverrides;
 
   finally
     Sections.Free;
     Decompressor.Free;
     TempBitmap.Free;
+  end;
+end;
+
+procedure TLemmingAnimationSet.ApplyModAssetOverrides;
+const
+  method = 'TLemmingAnimationSet.ApplyModAssetOverrides';
+var
+  root: string;
+
+  procedure TryLoadOverride(const fileName: string; bmp: TBitmap32; expectedWidth, expectedHeight: Integer; const what: string);
+  var
+    png: TPngImage;
+    tmp: TBitmap32;
+  begin
+    if not TFile.Exists(fileName) then
+      Exit;
+
+    png := TPngImage.Create;
+    tmp := TBitmap32.Create;
+    try
+      png.LoadFromFile(fileName);
+      tmp.FromPng(png);
+      if (tmp.Width <> expectedWidth) or (tmp.Height <> expectedHeight) then
+        Throw(Format('Invalid dimensions for %s "%s". Got %dx%d, expected %dx%d.',
+          [what, ExtractFileName(fileName), tmp.Width, tmp.Height, expectedWidth, expectedHeight]), method);
+      bmp.Assign(tmp);
+    finally
+      tmp.Free;
+      png.Free;
+    end;
+  end;
+
+begin
+  if TData.PathToModAssets.IsEmpty then
+    Exit;
+
+  root := TData.PathToModAssets + 'Lemmings\';
+  if not TDirectory.Exists(root) then
+    Exit;
+
+  for var i := 0 to fMetaLemmingAnimationList.Count - 1 do begin
+    var meta := fMetaLemmingAnimationList[i];
+    var fileName := root + Format('anim_%.2d.png', [i]);
+    TryLoadOverride(fileName, fLemmingBitmaps[i], meta.Width, meta.Height * meta.FrameCount, 'animation strip');
+  end;
+
+  for var i := 0 to fMetaExtraAnimationList.Count - 1 do begin
+    var meta := fMetaExtraAnimationList[i];
+    var fileName := root + Format('mask_%.2d.png', [i]);
+    TryLoadOverride(fileName, fExtraBitmaps[i], meta.Width, meta.Height * meta.FrameCount, 'mask strip');
   end;
 end;
 
@@ -1175,4 +1228,6 @@ begin
 end;
 
 end.
+
+
 

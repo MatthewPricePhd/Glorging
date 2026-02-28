@@ -22,6 +22,7 @@ type
     MiscOptions       : TMiscOptions;
   // other
     StyleName         : string;
+    ModName           : string;
     PathToStyles      : string;
     PathToMusic       : string;
     PathToSounds      : string;
@@ -53,6 +54,7 @@ begin
 
   ZoomFactor := 0;
   StyleName := 'Orig';
+  ModName := string.Empty;
   Monitor := 0;
 
   filename := ReplaceFileExt(Consts.AppName, '.config');
@@ -112,6 +114,10 @@ begin
     value := list.Values['Style'];
     if not value.IsEmpty then
       StyleName := value;
+    // mod
+    value := list.Values['Mod'];
+    if not value.IsEmpty then
+      ModName := value;
     // path to styles
     value := list.Values['PathToStyles'];
     if not value.IsEmpty then
@@ -174,6 +180,9 @@ begin
     list.Values['Display.ZoomFactor'] := ZoomFactor.ToString;
     // style
     list.Values['Style'] := StyleName;
+    // mod
+    if not ModName.IsEmpty then
+      list.Values['Mod'] := ModName;
     // path
     if not PathToStyles.IsEmpty then
       list.Values['PathToStyles'] := PathToStyles;

@@ -604,10 +604,30 @@ begin
   var Filter: TDirectory.TFilterPredicate :=
     function(const Path: string; const SearchRec: TSearchRec): Boolean
     begin
+      var stylePath := IncludeTrailingPathDelimiter(Path) + SearchRec.Name;
       for var style: TStyleDef in DefaultStyles do
         if SameText(SearchRec.Name, style.name) then
           Exit(False);
-      Result := True;
+
+      // Only include folders that look like real user styles.
+      // This excludes resource-only source folders (e.g. H93 with only .rc/.zip files).
+      try
+        if FileExists(IncludeTrailingPathDelimiter(stylePath) + 'Style.config') then
+          Exit(True);
+
+        if TDirectory.GetFiles(stylePath, '*lev*.dat').Length > 0 then
+          Exit(True);
+
+        if TDirectory.GetFiles(stylePath, '*.lvl').Length > 0 then
+          Exit(True);
+
+        if TDirectory.GetFiles(stylePath, '*.ini').Length > 0 then
+          Exit(True);
+      except
+        Exit(False);
+      end;
+
+      Result := False;
     end;
 
   Result := TDirectory.GetDirectories(PathToStyles, Filter);
