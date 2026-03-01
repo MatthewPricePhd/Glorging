@@ -35,6 +35,15 @@ $styleNames = @("Orig", "Ohno", "H94", "X91", "X92")
 $previewVersion = "v2026.02.28-embedded-libresprite"
 $settingsDir = Join-Path $env:APPDATA "Glorging"
 $settingsPath = Join-Path $settingsDir "ModAssetPreview.settings.json"
+$logPath = Join-Path $env:TEMP "ModAssetPreview.log"
+
+function Write-PreviewLog {
+  param([string]$message)
+  try {
+    $ts = Get-Date -Format "yyyy-MM-dd HH:mm:ss.fff"
+    Add-Content -Path $logPath -Value ("[{0}] {1}" -f $ts, $message) -Encoding UTF8
+  } catch {}
+}
 
 function Load-PreviewSettings {
   if (-not (Test-Path $settingsPath -PathType Leaf)) {
@@ -1104,74 +1113,125 @@ function Open-CurrentOverrideAsset {
 
 function Open-IntegratedPixelEditor {
   param([string]$assetPath, $spec)
+  Write-PreviewLog ("Open-IntegratedPixelEditor start asset={0}" -f $assetPath)
   if ($null -eq $spec) { return }
   if ($spec.Kind -ne "strip") { [void][System.Windows.Forms.MessageBox]::Show($form, "Integrated editor is optimized for strip assets.`nUse LibreSprite for large UI backgrounds.", "Integrated Editor", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information); return }
   $workingPath=$assetPath; $seededFromReference=$false
-  if (-not (Test-Path $workingPath -PathType Leaf)) { $refCandidate=Join-Path $referenceText.Text $spec.RelPath; if (Test-Path $refCandidate -PathType Leaf) { Ensure-Directory (Split-Path -Parent $workingPath); Copy-Item $refCandidate $workingPath -Force; $seededFromReference=$true } else { [void][System.Windows.Forms.MessageBox]::Show($form, "Asset file missing and no reference file found to seed it.`n$workingPath", "Integrated Editor", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning); return } }
-  $srcBmp=Load-BitmapSafe $workingPath; if ($null -eq $srcBmp) { [void][System.Windows.Forms.MessageBox]::Show($form, "Unable to open asset for editing:`n$workingPath", "Integrated Editor", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error); return }
-  $origBmp=[System.Drawing.Bitmap]$srcBmp.Clone(); $prevAutoPlay=$autoPlay.Checked; $autoPlay.Checked=$false
+  if (-not (Test-Path $workingPath -PathType Leaf)) {
+    $refCandidate=Join-Path $referenceText.Text $spec.RelPath
+    if (Test-Path $refCandidate -PathType Leaf) {
+      Ensure-Directory (Split-Path -Parent $workingPath)
+      Copy-Item $refCandidate $workingPath -Force
+      $seededFromReference=$true
+    } else {
+      [void][System.Windows.Forms.MessageBox]::Show($form, "Asset file missing and no reference file found to seed it.`n$workingPath", "Integrated Editor", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+      return
+    }
+  }
+  $srcBmp=Load-BitmapSafe $workingPath
+  if ($null -eq $srcBmp) { [void][System.Windows.Forms.MessageBox]::Show($form, "Unable to open asset for editing:`n$workingPath", "Integrated Editor", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error); return }
+
+  $origBmp=[System.Drawing.Bitmap]$srcBmp.Clone()
+  $prevAutoPlay=$autoPlay.Checked
+  $autoPlay.Checked=$false
   $editFrameCount=[Math]::Max(1,[Math]::Min([int]$spec.Frames,[int][Math]::Floor($srcBmp.Height/[Math]::Max(1,[int]$spec.FrameH))))
   $integratedEditorHost.SuspendLayout()
   try {
-    foreach($ctl in @($integratedEditorHost.Controls)){$ctl.Dispose()}; $integratedEditorHost.Controls.Clear(); $integratedEditorHost.Visible=$true; $editorHelp.Visible=$false
-    $top=New-Object System.Windows.Forms.FlowLayoutPanel; $top.Dock='Top'; $top.Height=42; $top.Padding=New-Object System.Windows.Forms.Padding(8,6,8,6); $top.WrapContents=$false; $top.BackColor=[System.Drawing.SystemColors]::Control; $top.ForeColor=[System.Drawing.SystemColors]::ControlText
-    $frameLab=New-Object System.Windows.Forms.Label; $frameLab.Text='Frame'; $frameLab.AutoSize=$true; $frameLab.Margin=New-Object System.Windows.Forms.Padding(2,10,4,2)
-    $prevFrameBtn=New-Object System.Windows.Forms.Button; $prevFrameBtn.Text='<'; $prevFrameBtn.Width=28; $prevFrameBtn.Height=24; $prevFrameBtn.Margin=New-Object System.Windows.Forms.Padding(2,6,2,2)
-    $framePick=New-Object System.Windows.Forms.NumericUpDown; $framePick.Minimum=0; $framePick.Maximum=[Math]::Max($editFrameCount-1,0); $framePick.Width=60
-    $nextFrameBtn=New-Object System.Windows.Forms.Button; $nextFrameBtn.Text='>'; $nextFrameBtn.Width=28; $nextFrameBtn.Height=24; $nextFrameBtn.Margin=New-Object System.Windows.Forms.Padding(2,6,8,2)
-    $frameInfo=New-Object System.Windows.Forms.Label; $frameInfo.AutoSize=$true; $frameInfo.Margin=New-Object System.Windows.Forms.Padding(2,10,10,2)
-    $zoomLab=New-Object System.Windows.Forms.Label; $zoomLab.Text='Zoom'; $zoomLab.AutoSize=$true; $zoomLab.Margin=New-Object System.Windows.Forms.Padding(12,10,4,2)
-    $zoomOutBtn=New-Object System.Windows.Forms.Button; $zoomOutBtn.Text='-'; $zoomOutBtn.Width=28; $zoomOutBtn.Height=24; $zoomOutBtn.Margin=New-Object System.Windows.Forms.Padding(2,6,2,2)
-    $zoomPick=New-Object System.Windows.Forms.NumericUpDown; $zoomPick.Minimum=4; $zoomPick.Maximum=96; $zoomPick.Value=35; $zoomPick.Width=60
-    $zoomInBtn=New-Object System.Windows.Forms.Button; $zoomInBtn.Text='+'; $zoomInBtn.Width=28; $zoomInBtn.Height=24; $zoomInBtn.Margin=New-Object System.Windows.Forms.Padding(2,6,8,2)
-    $pickColor=New-Object System.Windows.Forms.Button; $pickColor.Text='Add Color'; $pickColor.Width=78
-    $eyeDropper=New-Object System.Windows.Forms.CheckBox; $eyeDropper.Text='Pick'; $eyeDropper.AutoSize=$true; $eyeDropper.Margin=New-Object System.Windows.Forms.Padding(6,10,4,2)
-    $fillTool=New-Object System.Windows.Forms.CheckBox; $fillTool.Text='Fill'; $fillTool.AutoSize=$true; $fillTool.Margin=New-Object System.Windows.Forms.Padding(6,10,4,2)
-    $eraser=New-Object System.Windows.Forms.CheckBox; $eraser.Text='Eraser'; $eraser.AutoSize=$true; $eraser.Margin=New-Object System.Windows.Forms.Padding(8,10,4,2)
-    $fitCheck=New-Object System.Windows.Forms.CheckBox; $fitCheck.Text='Fit'; $fitCheck.AutoSize=$true; $fitCheck.Margin=New-Object System.Windows.Forms.Padding(6,10,4,2)
-    $saveBtn=New-Object System.Windows.Forms.Button; $saveBtn.Text='Save'; $saveBtn.Width=70; $saveBtn.Margin=New-Object System.Windows.Forms.Padding(16,6,4,2)
-    $backBtn=New-Object System.Windows.Forms.Button; $backBtn.Text='Back'; $backBtn.Width=70; $backBtn.Margin=New-Object System.Windows.Forms.Padding(8,6,4,2)
-    $status=New-Object System.Windows.Forms.Label; $status.Text="Editing $workingPath | Left-click/drag = paint"; $status.AutoSize=$true; $status.Margin=New-Object System.Windows.Forms.Padding(16,10,4,2)
-    foreach($c in @($frameLab,$prevFrameBtn,$framePick,$nextFrameBtn,$frameInfo,$zoomLab,$zoomOutBtn,$zoomPick,$zoomInBtn,$fitCheck,$pickColor,$eyeDropper,$fillTool,$eraser,$saveBtn,$backBtn,$status)){[void]$top.Controls.Add($c)}
-    foreach($b in @($prevFrameBtn,$nextFrameBtn,$zoomOutBtn,$zoomInBtn,$saveBtn,$backBtn)){ $b.UseVisualStyleBackColor=$true; $b.FlatStyle='Standard'; $b.ForeColor=[System.Drawing.SystemColors]::ControlText; $b.BackColor=[System.Drawing.SystemColors]::Control }
-    foreach($lbl in @($frameLab,$frameInfo,$zoomLab,$status,$eyeDropper,$fillTool,$eraser,$fitCheck)){ $lbl.ForeColor=[System.Drawing.SystemColors]::ControlText }
+    foreach($ctl in @($integratedEditorHost.Controls)){$ctl.Dispose()}
+    $integratedEditorHost.Controls.Clear()
+    $integratedEditorHost.Visible=$true
+    $editorHelp.Visible=$false
 
-    $split=New-Object System.Windows.Forms.SplitContainer; $split.Dock='Fill'; $split.Orientation='Vertical'; $split.FixedPanel='Panel1'; $split.Panel1MinSize=380; $split.SplitterDistance=500
-    $paletteHost=New-Object System.Windows.Forms.Panel; $paletteHost.Dock='Fill'; $paletteHost.BackColor=[System.Drawing.SystemColors]::Control; $paletteHost.Padding=New-Object System.Windows.Forms.Padding(8); $paletteHost.AutoScroll=$true; $paletteHost.MinimumSize=New-Object System.Drawing.Size(380,0)
-    $pl=New-Object System.Windows.Forms.TableLayoutPanel; $pl.Dock='Fill'; $pl.AutoSize=$false; $pl.ColumnCount=1; $pl.RowCount=12; $pl.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent,100))); for($i=0;$i -lt 11;$i++){ $pl.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize))) }; $pl.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent,100)))
-    $drawLabel=New-Object System.Windows.Forms.Label; $drawLabel.Text='Draw Color'; $drawLabel.AutoSize=$true; $drawLabel.ForeColor=[System.Drawing.SystemColors]::ControlText
+    $frameLab=New-Object System.Windows.Forms.Label; $frameLab.Text='Frame'; $frameLab.AutoSize=$true; $frameLab.Margin=New-Object System.Windows.Forms.Padding(2,8,4,2)
+    $prevFrameBtn=New-Object System.Windows.Forms.Button; $prevFrameBtn.Text='<'; $prevFrameBtn.Width=28; $prevFrameBtn.Height=24; $prevFrameBtn.Margin=New-Object System.Windows.Forms.Padding(2,6,2,2)
+    $framePick=New-Object System.Windows.Forms.NumericUpDown; $framePick.Minimum=0; $framePick.Maximum=[Math]::Max($editFrameCount-1,0); $framePick.Width=52
+    $nextFrameBtn=New-Object System.Windows.Forms.Button; $nextFrameBtn.Text='>'; $nextFrameBtn.Width=28; $nextFrameBtn.Height=24; $nextFrameBtn.Margin=New-Object System.Windows.Forms.Padding(2,6,8,2)
+    $frameInfo=New-Object System.Windows.Forms.Label; $frameInfo.AutoSize=$true; $frameInfo.Margin=New-Object System.Windows.Forms.Padding(2,8,10,2)
+
+    $zoomLab=New-Object System.Windows.Forms.Label; $zoomLab.Text='Zoom'; $zoomLab.AutoSize=$true; $zoomLab.Margin=New-Object System.Windows.Forms.Padding(2,8,4,2)
+    $zoomOutBtn=New-Object System.Windows.Forms.Button; $zoomOutBtn.Text='-'; $zoomOutBtn.Width=28; $zoomOutBtn.Height=24; $zoomOutBtn.Margin=New-Object System.Windows.Forms.Padding(2,6,2,2)
+    $zoomPick=New-Object System.Windows.Forms.NumericUpDown; $zoomPick.Minimum=4; $zoomPick.Maximum=96; $zoomPick.Value=35; $zoomPick.Width=52
+    $zoomInBtn=New-Object System.Windows.Forms.Button; $zoomInBtn.Text='+'; $zoomInBtn.Width=28; $zoomInBtn.Height=24; $zoomInBtn.Margin=New-Object System.Windows.Forms.Padding(2,6,8,2)
+    $fitCheck=New-Object System.Windows.Forms.CheckBox; $fitCheck.Text='Fit'; $fitCheck.AutoSize=$true; $fitCheck.Margin=New-Object System.Windows.Forms.Padding(0,6,8,2)
+
+    $eyeDropper=New-Object System.Windows.Forms.CheckBox; $eyeDropper.Text='Pick'; $eyeDropper.AutoSize=$true; $eyeDropper.Margin=New-Object System.Windows.Forms.Padding(0,6,8,2)
+    $fillTool=New-Object System.Windows.Forms.CheckBox; $fillTool.Text='Fill'; $fillTool.AutoSize=$true; $fillTool.Margin=New-Object System.Windows.Forms.Padding(0,6,8,2)
+    $eraser=New-Object System.Windows.Forms.CheckBox; $eraser.Text='Eraser'; $eraser.AutoSize=$true; $eraser.Margin=New-Object System.Windows.Forms.Padding(0,6,8,2)
+
+    $saveBtn=New-Object System.Windows.Forms.Button; $saveBtn.Text='Save'; $saveBtn.Width=78
+    $backBtn=New-Object System.Windows.Forms.Button; $backBtn.Text='Back'; $backBtn.Width=78
+    $miniStatus=New-Object System.Windows.Forms.Label; $miniStatus.Text="Editing $workingPath | Left-click/drag = paint"; $miniStatus.AutoSize=$true; $miniStatus.MaximumSize=New-Object System.Drawing.Size(480,0)
+
+    $split=New-Object System.Windows.Forms.SplitContainer
+    $split.Dock='Fill'; $split.Orientation='Vertical'; $split.FixedPanel='Panel1'; $split.Panel1MinSize=300; $split.SplitterDistance=360
+
+    $paletteHost=New-Object System.Windows.Forms.Panel
+    $paletteHost.Dock='Fill'; $paletteHost.BackColor=[System.Drawing.Color]::FromArgb(244,246,248)
+    $paletteHost.Padding=New-Object System.Windows.Forms.Padding(8); $paletteHost.AutoScroll=$true; $paletteHost.MinimumSize=New-Object System.Drawing.Size(300,0)
+
+    $pl=New-Object System.Windows.Forms.TableLayoutPanel
+    $pl.Dock='Fill'; $pl.AutoSize=$false; $pl.ColumnCount=1; $pl.RowCount=20
+    $pl.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent,100)))
+    for($i=0;$i -lt 19;$i++){ $pl.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize))) }
+    $pl.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent,100)))
+
+    $pathHdr=New-Object System.Windows.Forms.Label; $pathHdr.Text='Editing File'; $pathHdr.AutoSize=$true; $pathHdr.ForeColor=[System.Drawing.SystemColors]::ControlText
+    $pathBox=New-Object System.Windows.Forms.TextBox; $pathBox.ReadOnly=$true; $pathBox.Dock='Top'; $pathBox.Text=$workingPath; $pathBox.Height=24; $pathBox.Margin=New-Object System.Windows.Forms.Padding(0,0,0,4)
+
+    $frameZoomRow=New-Object System.Windows.Forms.FlowLayoutPanel; $frameZoomRow.AutoSize=$true; $frameZoomRow.WrapContents=$false; $frameZoomRow.Dock='Top'
+    foreach($c in @($frameLab,$prevFrameBtn,$framePick,$nextFrameBtn,$frameInfo,$zoomLab,$zoomOutBtn,$zoomPick,$zoomInBtn,$fitCheck)){ [void]$frameZoomRow.Controls.Add($c) }
+
+    $toolHdr=New-Object System.Windows.Forms.Label; $toolHdr.Text='Tools'; $toolHdr.AutoSize=$true; $toolHdr.ForeColor=[System.Drawing.SystemColors]::ControlText
+    $toolRow=New-Object System.Windows.Forms.FlowLayoutPanel; $toolRow.AutoSize=$true; $toolRow.WrapContents=$false; $toolRow.Dock='Top'
+    foreach($c in @($eyeDropper,$fillTool,$eraser)){ [void]$toolRow.Controls.Add($c) }
+
+    $drawLabel=New-Object System.Windows.Forms.Label; $drawLabel.Text='Draw Color (used for mapping target)'; $drawLabel.AutoSize=$true; $drawLabel.ForeColor=[System.Drawing.SystemColors]::ControlText
     $drawSwatch=New-Object System.Windows.Forms.Panel; $drawSwatch.Width=120; $drawSwatch.Height=24; $drawSwatch.BorderStyle='FixedSingle'
-    $hexRow=New-Object System.Windows.Forms.FlowLayoutPanel; $hexRow.AutoSize=$true; $hexRow.WrapContents=$false; $hexRow.Dock='Top'
-    $hexBox=New-Object System.Windows.Forms.TextBox; $hexBox.Width=90; $hexBox.Text='#FFFFFF'
-    $hexSetBtn=New-Object System.Windows.Forms.Button; $hexSetBtn.Text='Set'; $hexSetBtn.Width=52
-    $hexAddBtn=New-Object System.Windows.Forms.Button; $hexAddBtn.Text='Add'; $hexAddBtn.Width=52
-    foreach($c in @($hexBox,$hexSetBtn,$hexAddBtn)){[void]$hexRow.Controls.Add($c)}
+    $drawInfo=New-Object System.Windows.Forms.Label; $drawInfo.Text=''; $drawInfo.AutoSize=$true; $drawInfo.ForeColor=[System.Drawing.SystemColors]::ControlText
+
     $defaultHdr=New-Object System.Windows.Forms.Label; $defaultHdr.Text='Default Palette (Strip Analysis)'; $defaultHdr.AutoSize=$true; $defaultHdr.ForeColor=[System.Drawing.SystemColors]::ControlText
-    $defaultFlow=New-Object System.Windows.Forms.FlowLayoutPanel; $defaultFlow.AutoSize=$true; $defaultFlow.WrapContents=$true; $defaultFlow.Margin=New-Object System.Windows.Forms.Padding(0,2,0,6); $defaultFlow.Dock='Top'
-    $customHdr=New-Object System.Windows.Forms.Label; $customHdr.Text='Custom Palette'; $customHdr.AutoSize=$true; $customHdr.ForeColor=[System.Drawing.SystemColors]::ControlText
-    $customFlow=New-Object System.Windows.Forms.FlowLayoutPanel; $customFlow.AutoSize=$true; $customFlow.WrapContents=$true; $customFlow.Margin=New-Object System.Windows.Forms.Padding(0,2,0,6); $customFlow.Dock='Top'
-    $analysisRow=New-Object System.Windows.Forms.FlowLayoutPanel; $analysisRow.AutoSize=$true; $analysisRow.WrapContents=$false; $analysisRow.Dock='Top'
-    $analyzeBtn=New-Object System.Windows.Forms.Button; $analyzeBtn.Text='Analyze Strip'; $analyzeBtn.Width=96
-    $clearCustomBtn=New-Object System.Windows.Forms.Button; $clearCustomBtn.Text='Clear Custom'; $clearCustomBtn.Width=96
-    foreach($c in @($analyzeBtn,$clearCustomBtn)){[void]$analysisRow.Controls.Add($c)}
-    $mapHdr=New-Object System.Windows.Forms.Label; $mapHdr.Text='Recolor Mapping (source -> target)'; $mapHdr.AutoSize=$true; $mapHdr.ForeColor=[System.Drawing.SystemColors]::ControlText
-    $mapInfo=New-Object System.Windows.Forms.Label; $mapInfo.Text='Select source in Default Palette, then click target in Custom Palette.'; $mapInfo.AutoSize=$true; $mapInfo.ForeColor=[System.Drawing.SystemColors]::ControlText; $mapInfo.MaximumSize=New-Object System.Drawing.Size(520,0)
-    $mapList=New-Object System.Windows.Forms.ListBox; $mapList.Height=110; $mapList.Dock='Top'
+    $defaultFlow=New-Object System.Windows.Forms.FlowLayoutPanel; $defaultFlow.Name='defaultFlowPalette'; $defaultFlow.AutoSize=$true; $defaultFlow.WrapContents=$true; $defaultFlow.Margin=New-Object System.Windows.Forms.Padding(0,2,0,6); $defaultFlow.Dock='Top'
+
+    $customHdr=New-Object System.Windows.Forms.Label; $customHdr.Text='Custom Mapping (1:1 with Default)'; $customHdr.AutoSize=$true; $customHdr.ForeColor=[System.Drawing.SystemColors]::ControlText
+    $customFlow=New-Object System.Windows.Forms.FlowLayoutPanel; $customFlow.Name='customFlowPalette'; $customFlow.AutoSize=$true; $customFlow.WrapContents=$true; $customFlow.Margin=New-Object System.Windows.Forms.Padding(0,2,0,6); $customFlow.Dock='Top'
+
+    $mapInfo=New-Object System.Windows.Forms.Label; $mapInfo.Text='1) Click a default color. 2) Pick target with Draw Color picker. 3) Click matching custom box.'; $mapInfo.AutoSize=$true; $mapInfo.ForeColor=[System.Drawing.SystemColors]::ControlText; $mapInfo.MaximumSize=New-Object System.Drawing.Size(520,0)
+
     $mapRow=New-Object System.Windows.Forms.FlowLayoutPanel; $mapRow.AutoSize=$true; $mapRow.WrapContents=$false; $mapRow.Dock='Top'
-    $deriveMapBtn=New-Object System.Windows.Forms.Button; $deriveMapBtn.Text='Derive Map from Frame'; $deriveMapBtn.Width=138
-    $applyMapBtn=New-Object System.Windows.Forms.Button; $applyMapBtn.Text='Apply Map to Strip'; $applyMapBtn.Width=120
-    $clearMapBtn=New-Object System.Windows.Forms.Button; $clearMapBtn.Text='Clear Map'; $clearMapBtn.Width=80
-    foreach($c in @($deriveMapBtn,$applyMapBtn,$clearMapBtn)){[void]$mapRow.Controls.Add($c)}
-    foreach($c in @($drawLabel,$drawSwatch,$hexRow,$defaultHdr,$defaultFlow,$customHdr,$customFlow,$analysisRow,$mapHdr,$mapInfo,$mapList,$mapRow)){[void]$pl.Controls.Add($c)}
+    $analyzeBtn=New-Object System.Windows.Forms.Button; $analyzeBtn.Text='Re-analyze Strip'; $analyzeBtn.Width=108
+    $clearCustomBtn=New-Object System.Windows.Forms.Button; $clearCustomBtn.Text='Clear Mapping'; $clearCustomBtn.Width=98
+    $applyMapBtn=New-Object System.Windows.Forms.Button; $applyMapBtn.Name='applyMapBtn'; $applyMapBtn.Text='Apply Map to Strip'; $applyMapBtn.Width=120; $applyMapBtn.Enabled=$false
+    $script:integratedApplyButton=$applyMapBtn
+    $script:integratedDefaultFlow=$defaultFlow
+    $script:integratedCustomFlow=$customFlow
+    foreach($c in @($analyzeBtn,$clearCustomBtn,$applyMapBtn)){ [void]$mapRow.Controls.Add($c) }
+
+    $saveRow=New-Object System.Windows.Forms.FlowLayoutPanel; $saveRow.AutoSize=$true; $saveRow.WrapContents=$false; $saveRow.Dock='Top'
+    foreach($c in @($saveBtn,$backBtn)){ [void]$saveRow.Controls.Add($c) }
+
+    foreach($c in @($pathHdr,$pathBox,$frameZoomRow,$toolHdr,$toolRow,$defaultHdr,$defaultFlow,$drawLabel,$drawSwatch,$drawInfo,$customHdr,$customFlow,$mapInfo,$mapRow,$saveRow,$miniStatus)){
+      [void]$pl.Controls.Add($c)
+    }
+
     [void]$paletteHost.Controls.Add($pl)
 
     $canvasHost=New-Object System.Windows.Forms.Panel; $canvasHost.Dock='Fill'; $canvasHost.AutoScroll=$false; $canvasHost.BackColor=[System.Drawing.Color]::FromArgb(30,30,30)
     $canvas=New-Object System.Windows.Forms.PictureBox; $canvas.SizeMode='Normal'; $canvas.BackColor=[System.Drawing.Color]::FromArgb(22,22,22); $canvas.Cursor=[System.Windows.Forms.Cursors]::Cross
     [void]$canvasHost.Controls.Add($canvas)
-    [void]$split.Panel1.Controls.Add($paletteHost); [void]$split.Panel2.Controls.Add($canvasHost)
-    [void]$integratedEditorHost.Controls.Add($split); [void]$integratedEditorHost.Controls.Add($top); $top.BringToFront()
+
+    [void]$split.Panel1.Controls.Add($paletteHost)
+    [void]$split.Panel2.Controls.Add($canvasHost)
+    [void]$integratedEditorHost.Controls.Add($split)
+
+    foreach($b in @($prevFrameBtn,$nextFrameBtn,$zoomOutBtn,$zoomInBtn,$saveBtn,$backBtn,$analyzeBtn,$clearCustomBtn,$applyMapBtn)){
+      $b.UseVisualStyleBackColor=$true
+      $b.FlatStyle='Standard'
+      $b.ForeColor=[System.Drawing.SystemColors]::ControlText
+      $b.BackColor=[System.Drawing.SystemColors]::Control
+    }
+
     $applyEditorSplit = {
-      $want = [Math]::Max(380, [Math]::Min(620, [int]($integratedEditorHost.ClientSize.Width * 0.42)))
+      $want = [Math]::Max(300, [Math]::Min(460, [int]($integratedEditorHost.ClientSize.Width * 0.30)))
       $maxAllowed = [Math]::Max($split.Panel1MinSize, $split.Width - 180)
       if ($maxAllowed -gt $split.Panel1MinSize) {
         $split.SplitterDistance = [Math]::Min($want, $maxAllowed)
@@ -1179,7 +1239,9 @@ function Open-IntegratedPixelEditor {
         $split.SplitterDistance = $split.Panel1MinSize
       }
     }.GetNewClosure()
+
     $integratedEditorHost.Add_Resize({ $applyEditorSplit.Invoke() }.GetNewClosure())
+
     $splitReadyTimer = New-Object System.Windows.Forms.Timer
     $splitReadyTimer.Interval = 220
     $splitReadyTimer.Add_Tick({
@@ -1189,23 +1251,414 @@ function Open-IntegratedPixelEditor {
     }.GetNewClosure())
     $splitReadyTimer.Start()
 
-    $editorState=[pscustomobject]@{ DrawColor=[System.Drawing.Color]::FromArgb(255,$script:lastDrawColor.R,$script:lastDrawColor.G,$script:lastDrawColor.B); HoverPx=-1; HoverPy=-1 }
-    $pickColor.BackColor=$editorState.DrawColor; $drawSwatch.BackColor=$editorState.DrawColor
-    $mouseDown=$false; $dispBmp=$null; $lastRenderZoom=[int]$zoomPick.Value; $syncingZoom=$false; $lastPaintMsg=''
-    $selectedSourceArgb=$null; $defaultPalette=New-Object 'System.Collections.Generic.List[int]'; $customPaletteLocal=New-Object 'System.Collections.Generic.List[int]'; $colorMap=@{}
+    $editorState=[pscustomobject]@{
+      DrawColor=[System.Drawing.Color]::FromArgb(255,$script:lastDrawColor.R,$script:lastDrawColor.G,$script:lastDrawColor.B)
+      HoverPx=-1
+      HoverPy=-1
+    }
+    $script:integratedSelectedIndex=-1
+    $script:integratedMapApplied=$false
+    $script:integratedDrawColor=[System.Drawing.Color]::FromArgb(255,$script:lastDrawColor.R,$script:lastDrawColor.G,$script:lastDrawColor.B)
+    $script:integratedDrawArgb=[int]$script:integratedDrawColor.ToArgb()
+    $script:integratedActiveMapArgb=[int]$script:integratedDrawArgb
+    $global:GlorgingActiveMapArgb=[int]$script:integratedDrawArgb
+    $global:GlorgingActiveMapR=[int]$script:integratedDrawColor.R
+    $global:GlorgingActiveMapG=[int]$script:integratedDrawColor.G
+    $global:GlorgingActiveMapB=[int]$script:integratedDrawColor.B
+    $script:integratedTargetArgb=[int]$script:integratedDrawArgb
+    $script:integratedSelectedSourceArgb=[int]$script:integratedDrawArgb
+    $script:integratedPickedArgb=[int]$script:integratedDrawArgb
+    $script:integratedHasPickedColor=$false
+    $script:integratedColorSource='default'
+    $script:integratedPaletteCount=0
+    $script:integratedDefaultColors=@()
+    $script:integratedApplyReady=$false
+    $drawSwatch.BackColor=$script:integratedDrawColor
+    $drawColorDialog=New-Object System.Windows.Forms.ColorDialog
+    $drawColorDialog.FullOpen=$true
+    $drawColorDialog.AnyColor=$true
+    $drawColorDialog.SolidColorOnly=$false
+    Set-ColorDialogPaletteSafe -dialog $drawColorDialog -colors $script:customPalette
+
+    $mouseDown=$false
+    $dispBmp=$null
+    $lastRenderZoom=[int]$zoomPick.Value
+    $syncingZoom=$false
+    $lastPaintMsg=''
+    $defaultPalette=New-Object 'System.Collections.Generic.List[int]'
+    $mappedTargets=@{}
+    $mappedFilled=@{}
+    $script:integratedUiFilledSlots=@{}
+    $script:integratedUiPaletteCount=0
+    $script:integratedDefaultPalette=$defaultPalette
+    $script:integratedMappedTargets=$mappedTargets
+    $script:integratedMappedFilled=$mappedFilled
 
     $colorToHex={ param([System.Drawing.Color]$c) ('#{0:X2}{1:X2}{2:X2}' -f $c.R,$c.G,$c.B) }.GetNewClosure()
-    $setDrawColor={ param([System.Drawing.Color]$c,[bool]$remember) $editorState.DrawColor=[System.Drawing.Color]::FromArgb(255,$c.R,$c.G,$c.B); $pickColor.BackColor=$editorState.DrawColor; $drawSwatch.BackColor=$editorState.DrawColor; $hexBox.Text=$colorToHex.Invoke($editorState.DrawColor); $script:lastDrawColor=$editorState.DrawColor; if($remember){Update-CustomPalette -colorToAdd $editorState.DrawColor -savedRoot $libRootText.Text -savedExe $libExeText.Text} }.GetNewClosure()
-    $refreshMapList={ $mapList.Items.Clear(); foreach($k in @($colorMap.Keys | Sort-Object)){ [void]$mapList.Items.Add(("{0} -> {1}" -f $colorToHex.Invoke([System.Drawing.Color]::FromArgb([int]$k)),$colorToHex.Invoke([System.Drawing.Color]::FromArgb([int]$colorMap[$k])))) }; if($null -ne $selectedSourceArgb){$mapInfo.Text='Selected source: '+$colorToHex.Invoke([System.Drawing.Color]::FromArgb([int]$selectedSourceArgb))} else {$mapInfo.Text='Select source in Default Palette, then click target in Custom Palette.'} }.GetNewClosure()
-    $addCustomColorLocal={ param([System.Drawing.Color]$c) $argb=[int]([System.Drawing.Color]::FromArgb(255,$c.R,$c.G,$c.B).ToArgb()); if($customPaletteLocal.Contains($argb)){return}; $customPaletteLocal.Insert(0,$argb); while($customPaletteLocal.Count -gt 24){$customPaletteLocal.RemoveAt($customPaletteLocal.Count-1)}; Update-CustomPalette -colorToAdd $c -savedRoot $libRootText.Text -savedExe $libExeText.Text }.GetNewClosure()
-    $renderCustomPalette={ foreach($ctl in @($customFlow.Controls)){$ctl.Dispose()}; $customFlow.Controls.Clear(); foreach($argb in $customPaletteLocal){ $btn=New-Object System.Windows.Forms.Button; $btn.Width=22; $btn.Height=22; $btn.Margin=New-Object System.Windows.Forms.Padding(2); $btn.FlatStyle='Flat'; $btn.FlatAppearance.BorderColor=[System.Drawing.Color]::Black; $btn.FlatAppearance.BorderSize=1; $btn.BackColor=[System.Drawing.Color]::FromArgb([int]$argb); $btn.Tag=[int]$argb; $btn.Add_Click({ $target=[System.Drawing.Color]::FromArgb([int]$this.Tag); $setDrawColor.Invoke($target,$true); if($null -ne $selectedSourceArgb){$colorMap[[int]$selectedSourceArgb]=[int]$this.Tag; $refreshMapList.Invoke()} }.GetNewClosure()); [void]$customFlow.Controls.Add($btn) } }.GetNewClosure()
-    $renderDefaultPalette={ foreach($ctl in @($defaultFlow.Controls)){$ctl.Dispose()}; $defaultFlow.Controls.Clear(); foreach($argb in $defaultPalette){ $btn=New-Object System.Windows.Forms.Button; $btn.Width=22; $btn.Height=22; $btn.Margin=New-Object System.Windows.Forms.Padding(2); $btn.FlatStyle='Flat'; $btn.FlatAppearance.BorderColor=[System.Drawing.Color]::Black; $btn.FlatAppearance.BorderSize=1; $btn.BackColor=[System.Drawing.Color]::FromArgb([int]$argb); $btn.Tag=[int]$argb; $btn.Add_Click({ $selectedSourceArgb=[int]$this.Tag; $setDrawColor.Invoke([System.Drawing.Color]::FromArgb([int]$this.Tag),$true); $refreshMapList.Invoke() }.GetNewClosure()); [void]$defaultFlow.Controls.Add($btn) } }.GetNewClosure()
-    $analyzePalette={ $counts=@{}; $maxY=[int]($editFrameCount*[int]$spec.FrameH); for($y=0;$y -lt $maxY;$y++){ for($x=0;$x -lt [int]$spec.FrameW;$x++){ $px=$srcBmp.GetPixel($x,$y); if($px.A -le 0){continue}; $argb=[int]([System.Drawing.Color]::FromArgb(255,$px.R,$px.G,$px.B).ToArgb()); if($counts.ContainsKey($argb)){$counts[$argb]=[int]$counts[$argb]+1}else{$counts[$argb]=1} } }; $defaultPalette.Clear(); foreach($k in @($counts.Keys | Sort-Object -Descending -Property @{Expression={ $counts[$_] }}, @{Expression={$_}})){ [void]$defaultPalette.Add([int]$k); if($defaultPalette.Count -ge 24){break} }; $renderDefaultPalette.Invoke(); $status.Text="Palette analyzed: $($defaultPalette.Count) colors from $editFrameCount frame(s)." }.GetNewClosure()
-    foreach($ole in (Normalize-CustomPalette16 -inputColors $script:customPalette)){ try{ $c=[System.Drawing.ColorTranslator]::FromOle([int]$ole); $argb=[int]([System.Drawing.Color]::FromArgb(255,$c.R,$c.G,$c.B).ToArgb()); if(-not $customPaletteLocal.Contains($argb)){[void]$customPaletteLocal.Add($argb)} } catch{} }
+    $setDrawColor={
+      param([System.Drawing.Color]$c)
+      try {
+        $safe=[System.Drawing.Color]::FromArgb(255,[int]$c.R,[int]$c.G,[int]$c.B)
+        $script:integratedDrawColor=$safe
+        $script:integratedDrawArgb=[int]$safe.ToArgb()
+        $script:integratedActiveMapArgb=[int]$safe.ToArgb()
+        $global:GlorgingActiveMapArgb=[int]$safe.ToArgb()
+        $global:GlorgingActiveMapR=[int]$safe.R
+        $global:GlorgingActiveMapG=[int]$safe.G
+        $global:GlorgingActiveMapB=[int]$safe.B
+        $script:integratedTargetArgb=[int]$safe.ToArgb()
+        $script:integratedPickedArgb=[int]$safe.ToArgb()
+        $drawSwatch.BackColor=$safe
+        $drawInfo.Text=("#{0:X2}{1:X2}{2:X2}" -f $safe.R,$safe.G,$safe.B)
+        $script:lastDrawColor=$safe
+        Write-PreviewLog ("setDrawColor => #{0:X2}{1:X2}{2:X2}" -f $safe.R,$safe.G,$safe.B)
+      } catch {
+        Write-PreviewLog ("setDrawColor ERROR: {0}" -f $_.Exception.Message)
+      }
+    }.GetNewClosure()
+    $setMapSlot={
+      param([int]$slot,[System.Drawing.Color]$color)
+      try {
+        $mappedTargets[$slot]=[int]$color.ToArgb()
+        $mappedFilled[$slot]=$true
+        Write-PreviewLog ("setMapSlot ok slot={0} argb={1}" -f $slot,[int]$color.ToArgb())
+      } catch {
+        Write-PreviewLog ("setMapSlot ERROR slot={0}: {1}" -f $slot,$_.Exception.Message)
+        throw
+      }
+    }.GetNewClosure()
+
+    $setApplyEnabled={
+      param([bool]$enabled)
+      $btn=$script:integratedApplyButton
+      if($btn -is [System.Windows.Forms.Button]){
+        $btn.Enabled=$enabled
+        return
+      }
+      if($form -is [System.Windows.Forms.Form]){
+        $foundBtns=$form.Controls.Find('applyMapBtn',$true)
+        if(($null -ne $foundBtns) -and ($foundBtns.Count -gt 0) -and ($foundBtns[0] -is [System.Windows.Forms.Button])){
+          $script:integratedApplyButton=$foundBtns[0]
+          $foundBtns[0].Enabled=$enabled
+          return
+        }
+      }
+      $typeName=if($null -eq $btn){'<null>'}else{$btn.GetType().FullName}
+      Write-PreviewLog ("setApplyEnabled missing button type={0}" -f $typeName)
+    }.GetNewClosure()
+    $getApplyEnabled={
+      $btn=$script:integratedApplyButton
+      if($btn -is [System.Windows.Forms.Button]){ return [bool]$btn.Enabled }
+      return $false
+    }.GetNewClosure()
+    $updateApplyEnabled={
+      $count=[int]$script:integratedUiPaletteCount
+      if($count -le 0){
+        $count=[Math]::Min([int]$defaultFlow.Controls.Count,[int]$customFlow.Controls.Count)
+      }
+      $filled=if($null -ne $script:integratedUiFilledSlots){$script:integratedUiFilledSlots}else{@{}}
+      $isComplete=($count -gt 0)
+      if($isComplete){
+        for($i=0;$i -lt $count;$i++){
+          if(($filled -isnot [System.Collections.IDictionary]) -or (-not $filled.ContainsKey($i)) -or (-not [bool]$filled[$i])){ $isComplete=$false; break }
+        }
+      }
+      $null=$setApplyEnabled.Invoke([bool]$isComplete)
+      Write-PreviewLog ("updateApplyEnabled count={0} enabled={1}" -f $count,$isComplete)
+    }.GetNewClosure()
+    $invokeUpdateApplyEnabled={
+      if($updateApplyEnabled -is [scriptblock]){
+        $null=$updateApplyEnabled.Invoke()
+        return
+      }
+      $count=[Math]::Min([int]$defaultFlow.Controls.Count,[int]$customFlow.Controls.Count)
+      $filled=if(($script:integratedUiFilledSlots -is [System.Collections.IDictionary])){$script:integratedUiFilledSlots}else{@{}}
+      $isComplete=($count -gt 0)
+      if($isComplete){
+        for($i=0;$i -lt $count;$i++){
+          if((-not $filled.ContainsKey($i)) -or (-not [bool]$filled[$i])){ $isComplete=$false; break }
+        }
+      }
+      $null=$setApplyEnabled.Invoke([bool]$isComplete)
+      Write-PreviewLog ("invokeUpdateApplyEnabled fallback count={0} enabled={1}" -f $count,$isComplete)
+    }.GetNewClosure()
+    $refreshSelectionVisuals={ }.GetNewClosure()
+    $renderDefaultPalette={
+      foreach($ctl in @($defaultFlow.Controls)){$ctl.Dispose()}
+      $defaultFlow.Controls.Clear()
+      $selectedIdx=if(($null -ne $script:integratedSelectedIndex) -and ($script:integratedSelectedIndex -is [int])){[int]$script:integratedSelectedIndex}else{-1}
+      for($i=0;$i -lt $defaultPalette.Count;$i++){
+        $argb=[int]$defaultPalette.Item($i)
+        $btn=New-Object System.Windows.Forms.Button
+        $btn.Width=22; $btn.Height=22; $btn.Margin=New-Object System.Windows.Forms.Padding(2)
+        $btn.FlatStyle='Flat'
+        $btn.UseVisualStyleBackColor=$false
+        $btn.TabStop=$false
+        $btn.FlatAppearance.BorderColor=if($i -eq $selectedIdx){[System.Drawing.Color]::FromArgb(0,160,255)}else{[System.Drawing.Color]::FromArgb(90,90,90)}
+        $btn.FlatAppearance.BorderSize=if($i -eq $selectedIdx){3}else{1}
+        $btn.BackColor=[System.Drawing.Color]::FromArgb($argb)
+        $btn.Tag=[int]$i
+        $btn.Cursor=[System.Windows.Forms.Cursors]::Hand
+        $btn.Add_MouseDown({
+          param($s,$e)
+          if($e.Button -ne [System.Windows.Forms.MouseButtons]::Left){ return }
+          try {
+            Write-PreviewLog ("DefaultMouseDown tag={0} button={1}" -f [string]$s.Tag,[string]$e.Button)
+            $idx=[int]$s.Tag
+            Write-PreviewLog ("DefaultStep idx={0}" -f $idx)
+            $srcColor=[System.Drawing.Color]::FromArgb(255,[int]$s.BackColor.R,[int]$s.BackColor.G,[int]$s.BackColor.B)
+            $srcArgb=[int]$srcColor.ToArgb()
+            Write-PreviewLog ("DefaultStep argb={0}" -f $srcArgb)
+            $script:integratedSelectedIndex=$idx
+            for($d=0;$d -lt $defaultFlow.Controls.Count;$d++){
+              try { $defaultFlow.Controls[$d].FlatAppearance.BorderColor=if($d -eq $idx){[System.Drawing.Color]::FromArgb(0,160,255)}else{[System.Drawing.Color]::FromArgb(90,90,90)}; $defaultFlow.Controls[$d].FlatAppearance.BorderSize=if($d -eq $idx){3}else{1} } catch {}
+            }
+            for($c=0;$c -lt $customFlow.Controls.Count;$c++){
+              try { $customFlow.Controls[$c].FlatAppearance.BorderColor=if($c -eq $idx){[System.Drawing.Color]::FromArgb(0,160,255)}else{[System.Drawing.Color]::FromArgb(90,90,90)}; $customFlow.Controls[$c].FlatAppearance.BorderSize=if($c -eq $idx){3}else{1} } catch {}
+            }
+            Write-PreviewLog ("selectMapIndex set={0}" -f $idx)
+            Write-PreviewLog "DefaultStep selectMapIndex done"
+            $script:integratedDrawColor=$srcColor
+            $script:lastDrawColor=$srcColor
+            $script:integratedDrawArgb=[int]$srcColor.ToArgb()
+            $script:integratedActiveMapArgb=[int]$srcColor.ToArgb()
+            $global:GlorgingActiveMapArgb=[int]$srcColor.ToArgb()
+            $global:GlorgingActiveMapR=[int]$srcColor.R
+            $global:GlorgingActiveMapG=[int]$srcColor.G
+            $global:GlorgingActiveMapB=[int]$srcColor.B
+            $script:integratedTargetArgb=[int]$srcColor.ToArgb()
+            $script:integratedSelectedSourceArgb=[int]$srcColor.ToArgb()
+            $script:integratedHasPickedColor=$false
+            $script:integratedColorSource='default'
+            try { $drawColorDialog.Color=[System.Drawing.Color]::FromArgb(255,$srcColor.R,$srcColor.G,$srcColor.B) } catch {}
+            Write-PreviewLog "DefaultStep set script colors done"
+            Write-PreviewLog ("DefaultSelect index={0} color=#{1:X2}{2:X2}{3:X2}" -f $idx,$srcColor.R,$srcColor.G,$srcColor.B)
+            try { if($miniStatus -is [System.Windows.Forms.Control]){ $miniStatus.Text=("Selected source {0}: #{1:X2}{2:X2}{3:X2}" -f [int]$script:integratedSelectedIndex,$srcColor.R,$srcColor.G,$srcColor.B) } } catch {}
+            Write-PreviewLog "DefaultStep direct-ui done"
+          } catch {
+            Write-PreviewLog ("DefaultSelect ERROR: {0}" -f $_.Exception.ToString())
+            try { if($miniStatus -is [System.Windows.Forms.Control]){ $miniStatus.Text=("Default palette click failed: {0}" -f $_.Exception.Message) } } catch {}
+          }
+        }.GetNewClosure())
+        [void]$defaultFlow.Controls.Add($btn)
+      }
+    }.GetNewClosure()
+
+    $renderCustomPalette={
+      foreach($ctl in @($customFlow.Controls)){$ctl.Dispose()}
+      $customFlow.Controls.Clear()
+      $selectedIdx=if(($null -ne $script:integratedSelectedIndex) -and ($script:integratedSelectedIndex -is [int])){[int]$script:integratedSelectedIndex}else{-1}
+      for($i=0;$i -lt $defaultPalette.Count;$i++){
+        $mt=if($null -ne $script:integratedMappedTargets){$script:integratedMappedTargets}else{$mappedTargets}
+        $mf=if($null -ne $script:integratedMappedFilled){$script:integratedMappedFilled}else{$mappedFilled}
+        $targetArgb=if(($mt -is [System.Collections.IDictionary]) -and $mt.ContainsKey($i)){[int]$mt[$i]}else{0}
+        $isFilled=((($mf -is [System.Collections.IDictionary]) -and $mf.ContainsKey($i)) -and [bool]$mf[$i])
+        $btn=New-Object System.Windows.Forms.Button
+        $btn.Width=22; $btn.Height=22; $btn.Margin=New-Object System.Windows.Forms.Padding(2)
+        $btn.FlatStyle='Flat'
+        $btn.UseVisualStyleBackColor=$false
+        $btn.TabStop=$false
+        $btn.FlatAppearance.BorderColor=if($i -eq $selectedIdx){[System.Drawing.Color]::FromArgb(0,160,255)}else{[System.Drawing.Color]::FromArgb(90,90,90)}
+        $btn.FlatAppearance.BorderSize=if($i -eq $selectedIdx){3}else{1}
+        $srcArgbForSlot=if($i -lt $defaultPalette.Count){ [int]$defaultPalette.Item($i) } else { [int][System.Drawing.Color]::Black.ToArgb() }
+        $uiFilled=(($null -ne $script:integratedUiFilledSlots) -and $script:integratedUiFilledSlots.ContainsKey($i) -and [bool]$script:integratedUiFilledSlots[$i])
+        $btn.Tag=@{ Index=[int]$i; SourceArgb=[int]$srcArgbForSlot; Filled=[bool]$uiFilled; TargetArgb=[int]$targetArgb }
+        if($isFilled){
+          $btn.BackColor=[System.Drawing.Color]::FromArgb($targetArgb)
+          $btn.Text=''
+        } else {
+          $btn.BackColor=[System.Drawing.Color]::FromArgb(250,250,250)
+          $btn.Text=' '
+        }
+        $btn.Cursor=[System.Windows.Forms.Cursors]::Hand
+        $btn.Add_MouseDown({
+          param($s,$e)
+          if($e.Button -ne [System.Windows.Forms.MouseButtons]::Left){ return }
+          try {
+            Write-PreviewLog ("CustomMouseDown tag={0} button={1}" -f [string]$s.Tag,[string]$e.Button)
+            $slot=[int]$s.Tag.Index
+            Write-PreviewLog ("CustomStep slot={0}" -f $slot)
+            $df=if($script:integratedDefaultFlow -is [System.Windows.Forms.FlowLayoutPanel]){$script:integratedDefaultFlow}else{$null}
+            $cf=if($script:integratedCustomFlow -is [System.Windows.Forms.FlowLayoutPanel]){$script:integratedCustomFlow}else{$null}
+            if(($null -eq $cf) -and ($s.Parent -is [System.Windows.Forms.FlowLayoutPanel])){ $cf=[System.Windows.Forms.FlowLayoutPanel]$s.Parent }
+            if(($null -eq $df) -and ($form -is [System.Windows.Forms.Form])){
+              $foundDf=$form.Controls.Find('defaultFlowPalette',$true)
+              if(($null -ne $foundDf) -and ($foundDf.Count -gt 0) -and ($foundDf[0] -is [System.Windows.Forms.FlowLayoutPanel])){ $df=[System.Windows.Forms.FlowLayoutPanel]$foundDf[0]; $script:integratedDefaultFlow=$df }
+            }
+            if(($null -eq $cf) -and ($form -is [System.Windows.Forms.Form])){
+              $foundCf=$form.Controls.Find('customFlowPalette',$true)
+              if(($null -ne $foundCf) -and ($foundCf.Count -gt 0) -and ($foundCf[0] -is [System.Windows.Forms.FlowLayoutPanel])){ $cf=[System.Windows.Forms.FlowLayoutPanel]$foundCf[0]; $script:integratedCustomFlow=$cf }
+            }
+            $paletteCount=[int]$script:integratedUiPaletteCount
+            if($paletteCount -le 0 -and $defaultPalette.Count -gt 0){ $paletteCount=[int]$defaultPalette.Count }
+            if($paletteCount -le 0){
+              $dc=if($df -is [System.Windows.Forms.FlowLayoutPanel]){[int]$df.Controls.Count}else{0}
+              $cc=if($cf -is [System.Windows.Forms.FlowLayoutPanel]){[int]$cf.Controls.Count}else{0}
+              if($dc -gt 0 -and $cc -gt 0){ $paletteCount=[Math]::Min($dc,$cc) }
+              elseif($cc -gt 0){ $paletteCount=$cc }
+              elseif($dc -gt 0){ $paletteCount=$dc }
+            }
+            $dfCount=0
+            if($df -is [System.Windows.Forms.FlowLayoutPanel]){ $dfCount=[int]$df.Controls.Count }
+            $cfCount=0
+            if($cf -is [System.Windows.Forms.FlowLayoutPanel]){ $cfCount=[int]$cf.Controls.Count }
+            Write-PreviewLog ("CustomStep counts ui={0} defaultList={1} df={2} cf={3} used={4}" -f [int]$script:integratedUiPaletteCount,[int]$defaultPalette.Count,$dfCount,$cfCount,$paletteCount)
+            $r=[int]$global:GlorgingActiveMapR
+            $g=[int]$global:GlorgingActiveMapG
+            $b=[int]$global:GlorgingActiveMapB
+            Write-PreviewLog ("CustomStep activeRGB=({0},{1},{2}) activeMapArgbGlobal={3} activeMapArgbScript={4}" -f $r,$g,$b,[int]$global:GlorgingActiveMapArgb,[int]$script:integratedActiveMapArgb)
+            if($r -eq 0 -and $g -eq 0 -and $b -eq 0){
+              if(($null -ne $s.Tag) -and ($null -ne $s.Tag.SourceArgb)){
+                $srcColor=[System.Drawing.Color]::FromArgb([int]$s.Tag.SourceArgb)
+                $r=[int]$srcColor.R; $g=[int]$srcColor.G; $b=[int]$srcColor.B
+              } elseif($slot -lt $defaultFlow.Controls.Count){
+                $dc=$defaultFlow.Controls[$slot].BackColor
+                $r=[int]$dc.R; $g=[int]$dc.G; $b=[int]$dc.B
+              } elseif([int]$script:integratedSelectedSourceArgb -ne 0){
+                $sc=[System.Drawing.Color]::FromArgb([int]$script:integratedSelectedSourceArgb)
+                $r=[int]$sc.R; $g=[int]$sc.G; $b=[int]$sc.B
+              }
+            }
+            $currentDraw=[System.Drawing.Color]::FromArgb(255,$r,$g,$b)
+            Write-PreviewLog ("CustomStep drawArgb={0}" -f [int]$currentDraw.ToArgb())
+            Write-PreviewLog ("CustomSelect slot={0} draw=#{1:X2}{2:X2}{3:X2}" -f $slot,$currentDraw.R,$currentDraw.G,$currentDraw.B)
+            $targetColor=[System.Drawing.Color]::FromArgb(255,$currentDraw.R,$currentDraw.G,$currentDraw.B)
+            Write-PreviewLog "CustomStep targetColor built"
+            $script:integratedSelectedIndex=$slot
+            $dfLoopCount=0
+            if($df -is [System.Windows.Forms.FlowLayoutPanel]){ $dfLoopCount=[int]$df.Controls.Count }
+            for($d=0;$d -lt $dfLoopCount;$d++){
+              try { $df.Controls[$d].FlatAppearance.BorderColor=if($d -eq $slot){[System.Drawing.Color]::FromArgb(0,160,255)}else{[System.Drawing.Color]::FromArgb(90,90,90)}; $df.Controls[$d].FlatAppearance.BorderSize=if($d -eq $slot){3}else{1} } catch {}
+            }
+            $cfLoopCount=0
+            if($cf -is [System.Windows.Forms.FlowLayoutPanel]){ $cfLoopCount=[int]$cf.Controls.Count }
+            for($c=0;$c -lt $cfLoopCount;$c++){
+              try { $cf.Controls[$c].FlatAppearance.BorderColor=if($c -eq $slot){[System.Drawing.Color]::FromArgb(0,160,255)}else{[System.Drawing.Color]::FromArgb(90,90,90)}; $cf.Controls[$c].FlatAppearance.BorderSize=if($c -eq $slot){3}else{1} } catch {}
+            }
+            Write-PreviewLog ("selectMapIndex set={0}" -f $slot)
+            Write-PreviewLog "CustomStep selectMapIndex done"
+            if($null -eq $s.Tag){ $s.Tag=@{} }
+            $s.Tag.Filled=$true
+            $s.Tag.TargetArgb=[int]$targetColor.ToArgb()
+            if($null -eq $script:integratedUiFilledSlots){ $script:integratedUiFilledSlots=@{} }
+            $script:integratedUiFilledSlots[$slot]=$true
+            Write-PreviewLog "CustomStep mapped tag set"
+            try { $s.BackColor=$targetColor } catch {}
+            try { $s.Text='' } catch {}
+            Write-PreviewLog "CustomStep sender ui set"
+            Write-PreviewLog "CustomStep apply-check start"
+            $countNow=[int]$paletteCount
+            $isComplete=($countNow -gt 0)
+            $filledCount=0
+            if($cf -is [System.Windows.Forms.FlowLayoutPanel]){
+              foreach($ctlFilled in @($cf.Controls)){
+                if($ctlFilled -isnot [System.Windows.Forms.Button]){ continue }
+                $tagFilled=$ctlFilled.Tag
+                $ok=$false
+                if(($tagFilled -is [System.Collections.IDictionary]) -and $tagFilled.ContainsKey('Filled')){
+                  $ok=[bool]$tagFilled['Filled']
+                }
+                if($ok){ $filledCount++ }
+              }
+            }
+            if($filledCount -lt $countNow){ $isComplete=$false }
+            $applyBtnLocal=$null
+            if($script:integratedApplyButton -is [System.Windows.Forms.Button]){ $applyBtnLocal=$script:integratedApplyButton }
+            if(($null -eq $applyBtnLocal) -and ($form -is [System.Windows.Forms.Form])){
+              $foundBtns=$form.Controls.Find('applyMapBtn',$true)
+              if(($null -ne $foundBtns) -and ($foundBtns.Count -gt 0) -and ($foundBtns[0] -is [System.Windows.Forms.Button])){
+                $applyBtnLocal=$foundBtns[0]
+                $script:integratedApplyButton=$applyBtnLocal
+              }
+            }
+            if($applyBtnLocal -is [System.Windows.Forms.Button]){
+              $applyBtnLocal.Enabled=$isComplete
+            } else {
+              Write-PreviewLog "CustomStep apply button missing in inline setter"
+            }
+            Write-PreviewLog ("CustomStep apply-check count={0} enabled={1}" -f $countNow,$isComplete)
+            $script:integratedApplyReady=$isComplete
+            Write-PreviewLog ("CustomStep applyEnabled={0}" -f $isComplete)
+            $srcRef = if(($slot -lt $script:integratedDefaultColors.Count) -and ($script:integratedDefaultColors.Count -gt 0)){
+              [System.Drawing.Color]::FromArgb([int]$script:integratedDefaultColors[$slot])
+            } elseif(($null -ne $s.Tag) -and ($null -ne $s.Tag.SourceArgb)){
+              [System.Drawing.Color]::FromArgb([int]$s.Tag.SourceArgb)
+            } elseif(($df -is [System.Windows.Forms.FlowLayoutPanel]) -and ($slot -lt $df.Controls.Count)){
+              [System.Drawing.Color]::FromArgb(255,$df.Controls[$slot].BackColor.R,$df.Controls[$slot].BackColor.G,$df.Controls[$slot].BackColor.B)
+            } else {
+              [System.Drawing.Color]::FromArgb(255,0,0,0)
+            }
+            try { $miniStatus.Text=("Mapped #{0:X2}{1:X2}{2:X2} -> #{3:X2}{4:X2}{5:X2} ({6}/{7})" -f $srcRef.R,$srcRef.G,$srcRef.B,$targetColor.R,$targetColor.G,$targetColor.B,$filledCount,$countNow) } catch {}
+            Write-PreviewLog "CustomStep status set"
+            Write-PreviewLog ("CustomSelect mapped slot={0} argb={1} filled={2}/{3}" -f $slot,[int]$targetColor.ToArgb(),$filledCount,$countNow)
+            Write-PreviewLog "CustomStep direct-map done"
+          } catch {
+            Write-PreviewLog ("CustomSelect ERROR: {0}" -f $_.Exception.ToString())
+            try { if($miniStatus -is [System.Windows.Forms.Control]){ $miniStatus.Text=("Custom mapping click failed: {0}" -f $_.Exception.Message) } } catch {}
+          }
+        }.GetNewClosure())
+        [void]$customFlow.Controls.Add($btn)
+      }
+    }.GetNewClosure()
+
+    $analyzePalette={
+      Write-PreviewLog "AnalyzeStrip clicked"
+      $counts=@{}
+      $oldTargets=@{}
+      foreach($k in $mappedTargets.Keys){ $oldTargets[[int]$k]=[int]$mappedTargets[$k] }
+      $oldFilled=@{}
+      foreach($k in $mappedFilled.Keys){ $oldFilled[[int]$k]=[bool]$mappedFilled[$k] }
+      $paletteSource=$srcBmp
+      $maxY=[int]($editFrameCount*[int]$spec.FrameH)
+      for($y=0;$y -lt $maxY;$y++){
+        for($x=0;$x -lt [int]$spec.FrameW;$x++){
+          $px=$paletteSource.GetPixel($x,$y)
+          if($px.A -le 0){continue}
+          $argb=[int]([System.Drawing.Color]::FromArgb(255,$px.R,$px.G,$px.B).ToArgb())
+          if($counts.ContainsKey($argb)){$counts[$argb]=[int]$counts[$argb]+1}else{$counts[$argb]=1}
+        }
+      }
+      $defaultPalette.Clear()
+      foreach($k in @($counts.Keys | Sort-Object -Descending -Property @{Expression={ $counts[$_] }}, @{Expression={$_}})){
+        [void]$defaultPalette.Add([int]$k)
+      }
+      $script:integratedDefaultColors=@()
+      for($ii=0;$ii -lt $defaultPalette.Count;$ii++){ $script:integratedDefaultColors += [int]$defaultPalette.Item($ii) }
+      $script:integratedPaletteCount=[int]$defaultPalette.Count
+      $script:integratedUiPaletteCount=[int]$defaultPalette.Count
+      $script:integratedUiFilledSlots=@{}
+      $mappedTargets=@{}
+      $mappedFilled=@{}
+      $script:integratedDefaultPalette=$defaultPalette
+      $script:integratedMappedTargets=$mappedTargets
+      $script:integratedMappedFilled=$mappedFilled
+      for($i=0;$i -lt $defaultPalette.Count;$i++){
+        if($oldTargets.ContainsKey($i) -and $oldFilled.ContainsKey($i)){
+          $mappedTargets[$i]=[int]$oldTargets[$i]
+          $mappedFilled[$i]=[bool]$oldFilled[$i]
+        } else {
+          $mappedTargets[$i]=0
+          $mappedFilled[$i]=$false
+        }
+      }
+      $script:integratedSelectedIndex=-1
+      $mapInfo.Text='1) Click a default color. 2) Pick target with Draw Color picker. 3) Click matching custom box.'
+      & $renderDefaultPalette
+      & $renderCustomPalette
+      $null=$invokeUpdateApplyEnabled.Invoke()
+      $miniStatus.Text="Palette analyzed: $($defaultPalette.Count) colors from all $editFrameCount frame(s), source=current strip."
+      Write-PreviewLog ("AnalyzeStrip result colors={0}" -f $defaultPalette.Count)
+    }.GetNewClosure()
 
     $render={
-      if($null -ne $dispBmp){$dispBmp.Dispose();$dispBmp=$null}; $zoom=[int]$zoomPick.Value; $w=[int]$spec.FrameW; $h=[int]$spec.FrameH; $frame=[int]$framePick.Value
-      if($fitCheck.Checked){ $availW=[Math]::Max($canvasHost.ClientSize.Width-40,1); $availH=[Math]::Max($canvasHost.ClientSize.Height-40,1); $zw=[Math]::Floor($availW/$w); $zh=[Math]::Floor($availH/$h); $autoZoom=[Math]::Max(1,[Math]::Min($zw,$zh)); $zoom=[int][Math]::Max([int]$zoomPick.Minimum,[Math]::Min([int]$zoomPick.Maximum,$autoZoom)); if([int]$zoomPick.Value -ne $zoom){$syncingZoom=$true;$zoomPick.Value=$zoom;$syncingZoom=$false} }
+      if($null -ne $dispBmp){$dispBmp.Dispose();$dispBmp=$null}
+      $zoom=[int]$zoomPick.Value; $w=[int]$spec.FrameW; $h=[int]$spec.FrameH; $frame=[int]$framePick.Value
+      if($fitCheck.Checked){
+        $availW=[Math]::Max($canvasHost.ClientSize.Width-40,1); $availH=[Math]::Max($canvasHost.ClientSize.Height-40,1)
+        $zw=[Math]::Floor($availW/$w); $zh=[Math]::Floor($availH/$h); $autoZoom=[Math]::Max(1,[Math]::Min($zw,$zh))
+        $zoom=[int][Math]::Max([int]$zoomPick.Minimum,[Math]::Min([int]$zoomPick.Maximum,$autoZoom))
+        if([int]$zoomPick.Value -ne $zoom){$syncingZoom=$true;$zoomPick.Value=$zoom;$syncingZoom=$false}
+      }
       $dispBmp=New-Object System.Drawing.Bitmap(($w*$zoom),($h*$zoom)); $g=[System.Drawing.Graphics]::FromImage($dispBmp)
       try{
         $g.InterpolationMode='NearestNeighbor'; $g.PixelOffsetMode='HighQuality'; $g.SmoothingMode='None'; $g.Clear([System.Drawing.Color]::FromArgb(18,18,18))
@@ -1215,59 +1668,202 @@ function Open-IntegratedPixelEditor {
         $pen=New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(45,255,255,255)); try{ for($x=0;$x -le $w;$x++){ $g.DrawLine($pen,$x*$zoom,0,$x*$zoom,$h*$zoom) }; for($y=0;$y -le $h;$y++){ $g.DrawLine($pen,0,$y*$zoom,$w*$zoom,$y*$zoom) } } finally{$pen.Dispose()}
         $border=New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(180,120,180,255),2); try{$g.DrawRectangle($border,0,0,($w*$zoom)-1,($h*$zoom)-1)} finally{$border.Dispose()}
         if($editorState.HoverPx -ge 0 -and $editorState.HoverPx -lt $w -and $editorState.HoverPy -ge 0 -and $editorState.HoverPy -lt $h){ $hoverPen=New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(220,255,224,0),2); try{$g.DrawRectangle($hoverPen,($editorState.HoverPx*$zoom),($editorState.HoverPy*$zoom),$zoom-1,$zoom-1)} finally{$hoverPen.Dispose()} }
-      } finally {$g.Dispose()}
-      if($null -ne $canvas.Image){$canvas.Image.Dispose()}; $canvas.Image=$dispBmp; $canvas.Width=$dispBmp.Width; $canvas.Height=$dispBmp.Height; $canvas.Left=[Math]::Max(8,[int](($canvasHost.ClientSize.Width-$canvas.Width)/2)); $canvas.Top=[Math]::Max(8,[int](($canvasHost.ClientSize.Height-$canvas.Height)/2)); $lastRenderZoom=$zoom
-      $frameInfo.Text=("{0}/{1}" -f $frame,[Math]::Max($editFrameCount-1,0)); $status.Text="Editing $workingPath | frame=$frame zoom=$zoom | hover=($($editorState.HoverPx),$($editorState.HoverPy)) | tools: paint/fill/pick/eraser $lastPaintMsg"
+      } finally { $g.Dispose() }
+      if($null -ne $canvas.Image){$canvas.Image.Dispose()}
+      $canvas.Image=$dispBmp; $canvas.Width=$dispBmp.Width; $canvas.Height=$dispBmp.Height
+      $canvas.Left=[Math]::Max(8,[int](($canvasHost.ClientSize.Width-$canvas.Width)/2)); $canvas.Top=[Math]::Max(8,[int](($canvasHost.ClientSize.Height-$canvas.Height)/2)); $lastRenderZoom=$zoom
+      $frameInfo.Text=("{0}/{1}" -f $frame,[Math]::Max($editFrameCount-1,0)); $miniStatus.Text="Editing $workingPath | frame=$frame zoom=$zoom | hover=($($editorState.HoverPx),$($editorState.HoverPy)) | tools: paint/fill/pick/eraser $lastPaintMsg"
     }.GetNewClosure()
 
     $toCanvasPoint={ param([int]$mx,[int]$my,[bool]$fromHost) if($fromHost){ [pscustomobject]@{X=($mx-$canvas.Left);Y=($my-$canvas.Top)} } else { [pscustomobject]@{X=$mx;Y=$my} } }.GetNewClosure()
+
     $applyAt={
       param([int]$mx,[int]$my,[bool]$fromHost)
-      $pt=$toCanvasPoint.Invoke($mx,$my,$fromHost); $cx=[int]$pt.X; $cy=[int]$pt.Y; if($cx -lt 0 -or $cy -lt 0 -or $cx -ge $canvas.Width -or $cy -ge $canvas.Height){return}
+      $pt=& $toCanvasPoint $mx $my $fromHost; $cx=[int]$pt.X; $cy=[int]$pt.Y; if($cx -lt 0 -or $cy -lt 0 -or $cx -ge $canvas.Width -or $cy -ge $canvas.Height){return}
       $zoom=[int]$lastRenderZoom; $px=[int][Math]::Floor(($cx)/$zoom); $py=[int][Math]::Floor(($cy)/$zoom); if($px -lt 0 -or $px -ge $spec.FrameW -or $py -lt 0 -or $py -ge $spec.FrameH){return}
       try{
         $ay=$py+([int]$framePick.Value*[int]$spec.FrameH)
-        if($eyeDropper.Checked){ $picked=$srcBmp.GetPixel($px,$ay); if($picked.A -eq 0){$eraser.Checked=$true}else{$eraser.Checked=$false; $setDrawColor.Invoke([System.Drawing.Color]::FromArgb(255,$picked.R,$picked.G,$picked.B),$true); $addCustomColorLocal.Invoke($editorState.DrawColor); $renderCustomPalette.Invoke()}; $lastPaintMsg=("| pick x={0} y={1}" -f $px,$py) }
+        if($eyeDropper.Checked){
+          $picked=$srcBmp.GetPixel($px,$ay)
+          if($picked.A -eq 0){
+            $eraser.Checked=$true
+          } else {
+            $eraser.Checked=$false
+            $pick=[System.Drawing.Color]::FromArgb(255,$picked.R,$picked.G,$picked.B)
+            & $setDrawColor $pick
+          }
+          $lastPaintMsg=("| pick x={0} y={1}" -f $px,$py)
+        }
         elseif($fillTool.Checked){
-          $fillTarget=$srcBmp.GetPixel($px,$ay); $fillReplace=if($eraser.Checked){[System.Drawing.Color]::FromArgb(0,0,0,0)}else{$editorState.DrawColor}
-          if($fillTarget.ToArgb() -ne $fillReplace.ToArgb()){ $w=[int]$spec.FrameW; $h=[int]$spec.FrameH; $baseY=[int]$framePick.Value*[int]$spec.FrameH; $q=New-Object 'System.Collections.Generic.Queue[System.Drawing.Point]'; $seen=New-Object 'System.Collections.Generic.HashSet[int]'; $q.Enqueue([System.Drawing.Point]::new($px,$py)); while($q.Count -gt 0){ $pt2=$q.Dequeue(); $x2=[int]$pt2.X; $y2=[int]$pt2.Y; if($x2 -lt 0 -or $x2 -ge $w -or $y2 -lt 0 -or $y2 -ge $h){continue}; $k=$y2*$w+$x2; if(-not $seen.Add($k)){continue}; $yy=$baseY+$y2; $cur=$srcBmp.GetPixel($x2,$yy); if($cur.ToArgb() -ne $fillTarget.ToArgb()){continue}; $srcBmp.SetPixel($x2,$yy,$fillReplace); $q.Enqueue([System.Drawing.Point]::new($x2-1,$y2)); $q.Enqueue([System.Drawing.Point]::new($x2+1,$y2)); $q.Enqueue([System.Drawing.Point]::new($x2,$y2-1)); $q.Enqueue([System.Drawing.Point]::new($x2,$y2+1)) } }
+          $fillTarget=$srcBmp.GetPixel($px,$ay); $fillReplace=if($eraser.Checked){[System.Drawing.Color]::FromArgb(0,0,0,0)}else{[System.Drawing.Color]::FromArgb(255,[int]$drawSwatch.BackColor.R,[int]$drawSwatch.BackColor.G,[int]$drawSwatch.BackColor.B)}
+          if($fillTarget.ToArgb() -ne $fillReplace.ToArgb()){
+            $w=[int]$spec.FrameW; $h=[int]$spec.FrameH; $baseY=[int]$framePick.Value*[int]$spec.FrameH
+            $q=New-Object 'System.Collections.Generic.Queue[System.Drawing.Point]'; $seen=New-Object 'System.Collections.Generic.HashSet[int]'
+            $q.Enqueue([System.Drawing.Point]::new($px,$py))
+            while($q.Count -gt 0){
+              $pt2=$q.Dequeue(); $x2=[int]$pt2.X; $y2=[int]$pt2.Y
+              if($x2 -lt 0 -or $x2 -ge $w -or $y2 -lt 0 -or $y2 -ge $h){continue}
+              $k=$y2*$w+$x2; if(-not $seen.Add($k)){continue}
+              $yy=$baseY+$y2; $cur=$srcBmp.GetPixel($x2,$yy); if($cur.ToArgb() -ne $fillTarget.ToArgb()){continue}
+              $srcBmp.SetPixel($x2,$yy,$fillReplace)
+              $q.Enqueue([System.Drawing.Point]::new($x2-1,$y2)); $q.Enqueue([System.Drawing.Point]::new($x2+1,$y2)); $q.Enqueue([System.Drawing.Point]::new($x2,$y2-1)); $q.Enqueue([System.Drawing.Point]::new($x2,$y2+1))
+            }
+          }
           $lastPaintMsg=("| fill x={0} y={1}" -f $px,$py)
-        } elseif($eraser.Checked){ $srcBmp.SetPixel($px,$ay,[System.Drawing.Color]::FromArgb(0,0,0,0)); $lastPaintMsg=("| erase x={0} y={1}" -f $px,$py) }
-        else { $srcBmp.SetPixel($px,$ay,$editorState.DrawColor); $lastPaintMsg=("| paint x={0} y={1}" -f $px,$py) }
-      } catch { $status.Text="Edit failed: $($_.Exception.Message)"; return }
-      $render.Invoke()
+        }
+        elseif($eraser.Checked){
+          $srcBmp.SetPixel($px,$ay,[System.Drawing.Color]::FromArgb(0,0,0,0)); $lastPaintMsg=("| erase x={0} y={1}" -f $px,$py)
+        }
+        else {
+          $paintColor=[System.Drawing.Color]::FromArgb(255,[int]$drawSwatch.BackColor.R,[int]$drawSwatch.BackColor.G,[int]$drawSwatch.BackColor.B)
+          $srcBmp.SetPixel($px,$ay,$paintColor); $lastPaintMsg=("| paint x={0} y={1}" -f $px,$py)
+        }
+      } catch {
+        $miniStatus.Text="Edit failed: $($_.Exception.Message)"
+        return
+      }
+      & $render
     }.GetNewClosure()
-    $updateHover={ param([int]$mx,[int]$my,[bool]$fromHost) $pt=$toCanvasPoint.Invoke($mx,$my,$fromHost); $cx=[int]$pt.X; $cy=[int]$pt.Y; $newPx=-1; $newPy=-1; if($cx -ge 0 -and $cy -ge 0 -and $cx -lt $canvas.Width -and $cy -lt $canvas.Height){ $zoom=[int]$lastRenderZoom; $newPx=[int][Math]::Floor(($cx)/$zoom); $newPy=[int][Math]::Floor(($cy)/$zoom); if($newPx -lt 0 -or $newPx -ge $spec.FrameW -or $newPy -lt 0 -or $newPy -ge $spec.FrameH){$newPx=-1;$newPy=-1} }; if($newPx -ne $editorState.HoverPx -or $newPy -ne $editorState.HoverPy){$editorState.HoverPx=$newPx;$editorState.HoverPy=$newPy;$render.Invoke()} }.GetNewClosure()
-    $hexParse={ param([string]$txt) $v=$txt.Trim(); if($v.StartsWith('#')){$v=$v.Substring(1)}; if($v.Length -ne 6 -or $v -notmatch '^[0-9A-Fa-f]{6}$'){return $null}; $r=[Convert]::ToInt32($v.Substring(0,2),16); $g=[Convert]::ToInt32($v.Substring(2,2),16); $b=[Convert]::ToInt32($v.Substring(4,2),16); [System.Drawing.Color]::FromArgb(255,$r,$g,$b) }.GetNewClosure()
 
-    $deriveMapBtn.Add_Click({ $colorMap.Clear(); $frame=[int]$framePick.Value; $w=[int]$spec.FrameW; $h=[int]$spec.FrameH; $baseY=$frame*[int]$spec.FrameH; $pairs=@{}; for($y=0;$y -lt $h;$y++){ for($x=0;$x -lt $w;$x++){ $s=$origBmp.GetPixel($x,$baseY+$y); $d=$srcBmp.GetPixel($x,$baseY+$y); if($s.A -le 0 -or $d.A -le 0){continue}; $sk=[int]([System.Drawing.Color]::FromArgb(255,$s.R,$s.G,$s.B).ToArgb()); $dk=[int]([System.Drawing.Color]::FromArgb(255,$d.R,$d.G,$d.B).ToArgb()); $pk=("{0}|{1}" -f $sk,$dk); if($pairs.ContainsKey($pk)){$pairs[$pk]=[int]$pairs[$pk]+1}else{$pairs[$pk]=1} } }; $bySource=@{}; foreach($pk in $pairs.Keys){ $parts=$pk.Split('|'); $sk=[int]$parts[0]; $dk=[int]$parts[1]; if(-not $bySource.ContainsKey($sk)){$bySource[$sk]=@{}}; $bySource[$sk][$dk]=[int]$pairs[$pk] }; foreach($sk in $bySource.Keys){ $bestDk=$null; $bestCt=-1; foreach($dk in $bySource[$sk].Keys){ $ct=[int]$bySource[$sk][$dk]; if($ct -gt $bestCt){$bestCt=$ct;$bestDk=[int]$dk} }; if($null -ne $bestDk){$colorMap[[int]$sk]=[int]$bestDk} }; $refreshMapList.Invoke(); $status.Text="Derived map from frame ${frame}: $($colorMap.Count) entries." }.GetNewClosure())
-    $applyMapBtn.Add_Click({ if($colorMap.Count -eq 0){$status.Text='No map entries to apply.';return}; $changed=0; $maxY=[int]($editFrameCount*[int]$spec.FrameH); for($y=0;$y -lt $maxY;$y++){ for($x=0;$x -lt [int]$spec.FrameW;$x++){ $p=$srcBmp.GetPixel($x,$y); if($p.A -le 0){continue}; $sk=[int]([System.Drawing.Color]::FromArgb(255,$p.R,$p.G,$p.B).ToArgb()); if(-not $colorMap.ContainsKey($sk)){continue}; $dst=[System.Drawing.Color]::FromArgb([int]$colorMap[$sk]); $srcBmp.SetPixel($x,$y,[System.Drawing.Color]::FromArgb($p.A,$dst.R,$dst.G,$dst.B)); $changed++ } }; $render.Invoke(); $status.Text="Applied map across strip. Pixels changed: $changed" }.GetNewClosure())
-    $clearMapBtn.Add_Click({ $colorMap.Clear(); $selectedSourceArgb=$null; $refreshMapList.Invoke(); $status.Text='Color map cleared.' }.GetNewClosure())
-    $analyzeBtn.Add_Click({ $analyzePalette.Invoke() }.GetNewClosure())
-    $clearCustomBtn.Add_Click({ $customPaletteLocal.Clear(); $renderCustomPalette.Invoke(); $status.Text='Custom palette cleared (session view).' }.GetNewClosure())
-    $hexSetBtn.Add_Click({ $c=$hexParse.Invoke($hexBox.Text); if($null -eq $c){$status.Text='Invalid hex. Use #RRGGBB.'; return}; $setDrawColor.Invoke($c,$false) }.GetNewClosure())
-    $hexAddBtn.Add_Click({ $c=$hexParse.Invoke($hexBox.Text); if($null -eq $c){$status.Text='Invalid hex. Use #RRGGBB.'; return}; $setDrawColor.Invoke($c,$true); $addCustomColorLocal.Invoke($c); $renderCustomPalette.Invoke() }.GetNewClosure())
-    $pickColor.Add_Click({ $setDrawColor.Invoke($editorState.DrawColor,$true); $addCustomColorLocal.Invoke($editorState.DrawColor); $renderCustomPalette.Invoke(); $status.Text='Draw color pinned into Custom Palette.' }.GetNewClosure())
+    $updateHover={
+      param([int]$mx,[int]$my,[bool]$fromHost)
+      $pt=& $toCanvasPoint $mx $my $fromHost; $cx=[int]$pt.X; $cy=[int]$pt.Y; $newPx=-1; $newPy=-1
+      if($cx -ge 0 -and $cy -ge 0 -and $cx -lt $canvas.Width -and $cy -lt $canvas.Height){
+        $zoom=[int]$lastRenderZoom; $newPx=[int][Math]::Floor(($cx)/$zoom); $newPy=[int][Math]::Floor(($cy)/$zoom)
+        if($newPx -lt 0 -or $newPx -ge $spec.FrameW -or $newPy -lt 0 -or $newPy -ge $spec.FrameH){$newPx=-1;$newPy=-1}
+      }
+      if($newPx -ne $editorState.HoverPx -or $newPy -ne $editorState.HoverPy){$editorState.HoverPx=$newPx;$editorState.HoverPy=$newPy;& $render}
+    }.GetNewClosure()
+
+    $applyMapBtn.Add_Click({
+      $dpApply=$defaultFlow.Controls
+      $cpApply=$customFlow.Controls
+      $isCompleteApply=($cpApply.Count -gt 0 -and $dpApply.Count -eq $cpApply.Count)
+      if($isCompleteApply){
+        for($k=0;$k -lt $cpApply.Count;$k++){
+          $ct=$cpApply[$k]
+          $tag=$ct.Tag
+          if(($tag -isnot [System.Collections.IDictionary]) -or (-not $tag.ContainsKey('Filled')) -or (-not [bool]$tag['Filled'])){ $isCompleteApply=$false; break }
+        }
+      }
+      if(-not $isCompleteApply){ $miniStatus.Text='Fill all custom mapping slots before applying.'; return }
+      $colorMap=@{}
+      for($i=0;$i -lt $cpApply.Count;$i++){
+        $srcCtl=$dpApply[$i]
+        $dstTag=$cpApply[$i].Tag
+        if(($null -eq $srcCtl) -or ($dstTag -isnot [System.Collections.IDictionary]) -or (-not $dstTag.ContainsKey('TargetArgb'))){ continue }
+        $targetArgb=[int]$dstTag.TargetArgb
+        $srcArgb=0
+        if($dstTag.ContainsKey('SourceArgb')){
+          $srcArgb=[int]$dstTag.SourceArgb
+        } else {
+          $srcArgb=[int]([System.Drawing.Color]::FromArgb(255,[int]$srcCtl.BackColor.R,[int]$srcCtl.BackColor.G,[int]$srcCtl.BackColor.B).ToArgb())
+        }
+        $colorMap[$srcArgb]=$targetArgb
+        # Support iterative re-apply: if slot was previously applied to another color,
+        # allow remapping from that last applied color to the new target.
+        if($dstTag.ContainsKey('LastAppliedArgb')){
+          $lastApplied=[int]$dstTag.LastAppliedArgb
+          if($lastApplied -ne $srcArgb){
+            $colorMap[$lastApplied]=$targetArgb
+          }
+        }
+      }
+      $changed=0
+      $maxY=[int]($editFrameCount*[int]$spec.FrameH)
+      for($y=0;$y -lt $maxY;$y++){
+        for($x=0;$x -lt [int]$spec.FrameW;$x++){
+          $p=$srcBmp.GetPixel($x,$y); if($p.A -le 0){continue}
+          $sk=[int]([System.Drawing.Color]::FromArgb(255,$p.R,$p.G,$p.B).ToArgb())
+          if(-not $colorMap.ContainsKey($sk)){continue}
+          $dst=[System.Drawing.Color]::FromArgb([int]$colorMap[$sk])
+          $srcBmp.SetPixel($x,$y,[System.Drawing.Color]::FromArgb($p.A,$dst.R,$dst.G,$dst.B))
+          $changed++
+        }
+      }
+      & $render
+      $script:integratedMapApplied=$true
+      for($i=0;$i -lt $cpApply.Count;$i++){
+        $dstTag=$cpApply[$i].Tag
+        if(($dstTag -is [System.Collections.IDictionary]) -and $dstTag.ContainsKey('TargetArgb')){
+          $dstTag.LastAppliedArgb=[int]$dstTag.TargetArgb
+          $cpApply[$i].Tag=$dstTag
+        }
+      }
+      $miniStatus.Text="Applied map across strip. Pixels changed: $changed"
+      Write-PreviewLog ("ApplyMap changed={0} mapEntries={1} applyEnabledNow={2}" -f $changed,$colorMap.Count,($getApplyEnabled.Invoke()))
+    }.GetNewClosure())
+
+    $analyzeBtn.Add_Click({ & $analyzePalette }.GetNewClosure())
+
+    $clearCustomBtn.Add_Click({
+      for($i=0;$i -lt $defaultPalette.Count;$i++){ $mappedTargets[$i]=0; $mappedFilled[$i]=$false }
+      $script:integratedUiFilledSlots=@{}
+      & $renderCustomPalette
+      $null=$invokeUpdateApplyEnabled.Invoke()
+      $miniStatus.Text='Custom mapping cleared.'
+    }.GetNewClosure())
+
     $eyeDropper.Add_CheckedChanged({ if($eyeDropper.Checked){$fillTool.Checked=$false;$eraser.Checked=$false} }.GetNewClosure())
     $fillTool.Add_CheckedChanged({ if($fillTool.Checked){$eyeDropper.Checked=$false} }.GetNewClosure())
     $eraser.Add_CheckedChanged({ if($eraser.Checked){$eyeDropper.Checked=$false} }.GetNewClosure())
-    $canvas.Add_MouseDown({ param($s,$e) if($e.Button -ne [System.Windows.Forms.MouseButtons]::Left){return}; $mouseDown=$true; $canvas.Capture=$true; $applyAt.Invoke($e.X,$e.Y,$false); if($eyeDropper.Checked -or $fillTool.Checked){$mouseDown=$false;$canvas.Capture=$false} }.GetNewClosure())
-    $canvas.Add_MouseMove({ param($s,$e) $updateHover.Invoke($e.X,$e.Y,$false); if($mouseDown){$applyAt.Invoke($e.X,$e.Y,$false)} }.GetNewClosure())
+    $openDrawColorPicker={
+      Write-PreviewLog "DrawColorPicker open"
+      $drawColorDialog.Color=[System.Drawing.Color]::FromArgb(255,[int]$drawSwatch.BackColor.R,[int]$drawSwatch.BackColor.G,[int]$drawSwatch.BackColor.B)
+      Set-ColorDialogPaletteSafe -dialog $drawColorDialog -colors $script:customPalette
+      $res=Show-ColorDialogSafe -dialog $drawColorDialog -owner $form
+      if($res -eq [System.Windows.Forms.DialogResult]::OK){
+        $picked=[System.Drawing.Color]::FromArgb(255,$drawColorDialog.Color.R,$drawColorDialog.Color.G,$drawColorDialog.Color.B)
+        & $setDrawColor $picked
+        $script:integratedDrawArgb=[int]$picked.ToArgb()
+        $script:integratedActiveMapArgb=[int]$picked.ToArgb()
+        $global:GlorgingActiveMapArgb=[int]$picked.ToArgb()
+        $global:GlorgingActiveMapR=[int]$picked.R
+        $global:GlorgingActiveMapG=[int]$picked.G
+        $global:GlorgingActiveMapB=[int]$picked.B
+        $script:integratedPickedArgb=[int]$picked.ToArgb()
+        $script:integratedHasPickedColor=$true
+        $script:integratedColorSource='picker'
+        Update-CustomPalette -colorToAdd $picked -savedRoot $libRootText.Text -savedExe $libExeText.Text
+        Sync-CustomPaletteFromDialog -dialog $drawColorDialog -savedRoot $libRootText.Text -savedExe $libExeText.Text -preferredColor $picked
+        $miniStatus.Text=('Draw color set to {0}' -f (& $colorToHex $picked))
+        Write-PreviewLog ("DrawColorPicker OK => {0}" -f (& $colorToHex $picked))
+      } else {
+        Write-PreviewLog ("DrawColorPicker canceled result={0}" -f [string]$res)
+      }
+    }.GetNewClosure()
+    $drawSwatch.Add_Click({ & $openDrawColorPicker }.GetNewClosure())
+    $drawInfo.Add_Click({ & $openDrawColorPicker }.GetNewClosure())
+    $drawLabel.Add_Click({ & $openDrawColorPicker }.GetNewClosure())
+
+    $canvas.Add_MouseDown({ param($s,$e) if($e.Button -ne [System.Windows.Forms.MouseButtons]::Left){return}; $mouseDown=$true; $canvas.Capture=$true; & $applyAt $e.X $e.Y $false; if($eyeDropper.Checked -or $fillTool.Checked){$mouseDown=$false;$canvas.Capture=$false} }.GetNewClosure())
+    $canvas.Add_MouseMove({ param($s,$e) & $updateHover $e.X $e.Y $false; if($mouseDown){& $applyAt $e.X $e.Y $false} }.GetNewClosure())
     $canvas.Add_MouseUp({ $mouseDown=$false; $canvas.Capture=$false }.GetNewClosure())
-    $canvas.Add_MouseLeave({ $editorState.HoverPx=-1; $editorState.HoverPy=-1; $render.Invoke() }.GetNewClosure())
-    $framePick.Add_ValueChanged({ $render.Invoke() }.GetNewClosure())
-    $zoomPick.Add_ValueChanged({ if(-not $syncingZoom -and $fitCheck.Checked){$fitCheck.Checked=$false}else{$render.Invoke()} }.GetNewClosure())
-    $fitCheck.Add_CheckedChanged({ $render.Invoke() }.GetNewClosure())
-    $canvasHost.Add_Resize({ $render.Invoke() }.GetNewClosure())
+    $canvas.Add_MouseLeave({ $editorState.HoverPx=-1; $editorState.HoverPy=-1; & $render }.GetNewClosure())
+
+    $framePick.Add_ValueChanged({ & $render }.GetNewClosure())
+    $zoomPick.Add_ValueChanged({ if(-not $syncingZoom -and $fitCheck.Checked){$fitCheck.Checked=$false}else{& $render} }.GetNewClosure())
+    $fitCheck.Add_CheckedChanged({ & $render }.GetNewClosure())
+    $canvasHost.Add_Resize({ & $render }.GetNewClosure())
+
     $prevFrameBtn.Add_Click({ if($framePick.Value -gt $framePick.Minimum){$framePick.Value=$framePick.Value-1}else{$framePick.Value=$framePick.Maximum} }.GetNewClosure())
     $nextFrameBtn.Add_Click({ if($framePick.Value -lt $framePick.Maximum){$framePick.Value=$framePick.Value+1}else{$framePick.Value=$framePick.Minimum} }.GetNewClosure())
     $zoomOutBtn.Add_Click({ $fitCheck.Checked=$false; if($zoomPick.Value -gt $zoomPick.Minimum){$zoomPick.Value=$zoomPick.Value-1} }.GetNewClosure())
     $zoomInBtn.Add_Click({ $fitCheck.Checked=$false; if($zoomPick.Value -lt $zoomPick.Maximum){$zoomPick.Value=$zoomPick.Value+1} }.GetNewClosure())
-    $saveBtn.Add_Click({ try{$srcBmp.Save($workingPath,[System.Drawing.Imaging.ImageFormat]::Png);$status.Text="Saved: $workingPath";Render-Selection}catch{[void][System.Windows.Forms.MessageBox]::Show($form,"Save failed:`n$($_.Exception.Message)","Integrated Editor",[System.Windows.Forms.MessageBoxButtons]::OK,[System.Windows.Forms.MessageBoxIcon]::Error)} }.GetNewClosure())
+
+    $saveBtn.Add_Click({ try{$srcBmp.Save($workingPath,[System.Drawing.Imaging.ImageFormat]::Png);$miniStatus.Text="Saved: $workingPath";Render-Selection}catch{[void][System.Windows.Forms.MessageBox]::Show($form,"Save failed:`n$($_.Exception.Message)","Integrated Editor",[System.Windows.Forms.MessageBoxButtons]::OK,[System.Windows.Forms.MessageBoxIcon]::Error)} }.GetNewClosure())
     $backBtn.Add_Click({ if($null -ne $canvas.Image){$canvas.Image.Dispose();$canvas.Image=$null}; if($null -ne $srcBmp){$srcBmp.Dispose()}; if($null -ne $origBmp){$origBmp.Dispose()}; $integratedEditorHost.Visible=$false; $editorHelp.Visible=$true; $autoPlay.Checked=$prevAutoPlay; Render-Selection }.GetNewClosure())
 
-    $applyEditorSplit.Invoke(); $setDrawColor.Invoke($editorState.DrawColor,$false); $renderCustomPalette.Invoke(); $analyzePalette.Invoke(); $refreshMapList.Invoke(); $render.Invoke(); Start-Sleep -Milliseconds 40; $render.Invoke(); if($seededFromReference){Render-Selection}
-  } finally { $integratedEditorHost.ResumeLayout() }
+    & $applyEditorSplit
+    & $setDrawColor $script:integratedDrawColor
+    & $analyzePalette
+    & $render
+    Start-Sleep -Milliseconds 40
+    & $render
+    if($seededFromReference){Render-Selection}
+  } finally {
+    $integratedEditorHost.ResumeLayout()
+  }
 }
 function Ensure-LibreSpriteSource {
   param([string]$rootPath)
@@ -1826,6 +2422,7 @@ $integratedEditButton.Add_Click({
     Set-EditorStatus -message "Mini editor ready." -busy $false
   } catch {
     Set-EditorStatus -message "Editor launch failed." -busy $false
+    Write-PreviewLog ("Open-IntegratedPixelEditor ERROR: {0}" -f $_.Exception.ToString())
     [void][System.Windows.Forms.MessageBox]::Show($form, "Editor launch failed:`n$($_.Exception.Message)", "Editor", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
     $integratedEditorHost.Visible = $false
     $editorHelp.Visible = $true
@@ -1906,4 +2503,5 @@ if ($assetList.Items.Count -gt 0) {
 }
 
 [void]$form.ShowDialog()
+
 

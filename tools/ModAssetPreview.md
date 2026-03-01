@@ -39,23 +39,29 @@ Preview tab:
 
 Basic editor:
 
-- replaced Windows `ColorDialog` workflow with inline palette controls
+- kept non-Windows-dialog mapping workflow in the integrated panel
 - added fixed left tool panel (resizable but enforced minimum width)
-- added hex color input (`#RRGGBB`) with `Set` and `Add`
 - added `Default Palette (Strip Analysis)` from all frames in selected strip
-- added `Custom Palette` swatches (persisted via settings)
+- added `Custom Mapping` swatches (1:1 with default palette positions)
 - added recolor mapping workflow:
-  - select source color from default palette
-  - select target color from custom palette
-  - `Apply Map to Strip` recolors all frames
-- added `Derive Map from Frame`:
-  - compares original frame vs edited frame
-  - infers source->target color map
-  - applies inferred map to whole strip
+  - click default palette swatch to choose source and active draw color
+  - optionally choose target via draw color picker
+  - click matching custom mapping slot to assign target color
+  - `Apply Map to Strip` is enabled only when all mapping slots are filled
+  - apply works across all frames in the strip
+  - iterative re-apply is supported (change mapped colors and apply again)
 - improved first-load layout and readability:
   - light tool-panel background
   - readable toolbar/button styling
   - enforced splitter sizing after first layout pass
+
+Debug/test support:
+
+- detailed interaction logging is currently enabled in `%TEMP%\ModAssetPreview.log`
+- helper launcher script:
+  - `tools\Launch-ModAssetPreview.ps1` (supports `-FreshLog`)
+- helper interaction test harness:
+  - `tools\Run-PaletteInteractionTest.ps1`
 
 ## Run
 
