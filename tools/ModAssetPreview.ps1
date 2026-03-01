@@ -1768,7 +1768,26 @@ function Open-IntegratedPixelEditor {
           $lastPaintMsg=("| pick x={0} y={1}" -f $px,$py)
         }
         elseif($fillTool.Checked){
-          $fillTarget=$srcBmp.GetPixel($px,$ay); $fillReplace=if($eraser.Checked){[System.Drawing.Color]::FromArgb(0,0,0,0)}else{[System.Drawing.Color]::FromArgb(255,[int]$script:integratedDrawColor.R,[int]$script:integratedDrawColor.G,[int]$script:integratedDrawColor.B)}
+          $fillTarget=$srcBmp.GetPixel($px,$ay)
+          if($eraser.Checked){
+            $fillReplace=[System.Drawing.Color]::FromArgb(0,0,0,0)
+            $fillSource='eraser'
+          } else {
+            $fillReplace=$null
+            if($script:integratedDrawColor -is [System.Drawing.Color]){
+              $fillReplace=[System.Drawing.Color]::FromArgb(255,[int]$script:integratedDrawColor.R,[int]$script:integratedDrawColor.G,[int]$script:integratedDrawColor.B)
+            } elseif(($global:GlorgingActiveMapR -as [int]) -or ($global:GlorgingActiveMapG -as [int]) -or ($global:GlorgingActiveMapB -as [int])){
+              $fillReplace=[System.Drawing.Color]::FromArgb(255,[int]$global:GlorgingActiveMapR,[int]$global:GlorgingActiveMapG,[int]$global:GlorgingActiveMapB)
+            } elseif([int]$script:integratedSelectedSourceArgb -ne 0){
+              $fillSrc=[System.Drawing.Color]::FromArgb([int]$script:integratedSelectedSourceArgb)
+              $fillReplace=[System.Drawing.Color]::FromArgb(255,[int]$fillSrc.R,[int]$fillSrc.G,[int]$fillSrc.B)
+            } else {
+              $fillReplace=[System.Drawing.Color]::FromArgb(255,255,128,64)
+            }
+            $fillSource=[string]$script:integratedColorSource
+            if([string]::IsNullOrWhiteSpace($fillSource)){ $fillSource='direct' }
+          }
+          Write-PreviewLog ("FillAction color=#{0:X2}{1:X2}{2:X2} source={3}" -f $fillReplace.R,$fillReplace.G,$fillReplace.B,$fillSource)
           if($fillTarget.ToArgb() -ne $fillReplace.ToArgb()){
             $w=[int]$spec.FrameW; $h=[int]$spec.FrameH; $baseY=[int]$framePick.Value*[int]$spec.FrameH
             $q=New-Object 'System.Collections.Generic.Queue[System.Drawing.Point]'; $seen=New-Object 'System.Collections.Generic.HashSet[int]'
