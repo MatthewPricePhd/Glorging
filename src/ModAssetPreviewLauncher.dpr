@@ -52,7 +52,7 @@ begin
   end;
 
   repoRoot := FindRepoRootFromScript(scriptPath);
-  args := '-NoProfile -ExecutionPolicy Bypass -File ' + Quote(scriptPath);
+  args := '-NoProfile -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File ' + Quote(scriptPath);
 
   rc := ShellExecute(0, 'open', PChar('powershell.exe'), PChar(args), PChar(repoRoot), SW_SHOWNORMAL);
   if rc <= 32 then begin
@@ -60,4 +60,3 @@ begin
     Halt(1);
   end;
 end.
-

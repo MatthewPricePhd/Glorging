@@ -13,6 +13,50 @@ The preview tool now includes baseline export orchestration:
   - `Open Active Pack Folder`
   - `Launch Game`
 
+Editor side-car integration:
+
+- new `Editor` tab for LibreSprite workflow
+- clone/update LibreSprite source from inside the UI
+- open source folder for direct modification
+- launch LibreSprite and open the currently selected asset directly
+- includes built-in `Integrated Edit (No Install)` for direct strip editing without external tools
+  - runs inline inside the `Editor` tab (no popup window)
+  - use `Editor > Basic` for normal workflow
+  - LibreSprite controls moved to `Editor > Advanced`
+  - launcher now starts PowerShell with `-STA` for stable WinForms/OLE behavior
+
+## Current Progress (Mar 1, 2026)
+
+Preview tab:
+
+- left file list pane widened by default for better filename readability
+- removed `Strip Diff` and `Frame Diff` columns
+- remaining preview boxes:
+  - `Reference Strip`
+  - `Override Strip`
+  - `Reference Frame`
+  - `Override Frame`
+
+Basic editor:
+
+- replaced Windows `ColorDialog` workflow with inline palette controls
+- added fixed left tool panel (resizable but enforced minimum width)
+- added hex color input (`#RRGGBB`) with `Set` and `Add`
+- added `Default Palette (Strip Analysis)` from all frames in selected strip
+- added `Custom Palette` swatches (persisted via settings)
+- added recolor mapping workflow:
+  - select source color from default palette
+  - select target color from custom palette
+  - `Apply Map to Strip` recolors all frames
+- added `Derive Map from Frame`:
+  - compares original frame vs edited frame
+  - infers source->target color map
+  - applies inferred map to whole strip
+- improved first-load layout and readability:
+  - light tool-panel background
+  - readable toolbar/button styling
+  - enforced splitter sizing after first layout pass
+
 ## Run
 
 From repo root:
@@ -25,6 +69,10 @@ Or build and run launcher EXE:
 
 - project: `src/ModAssetPreviewLauncher.dproj`
 - exe: `ModAssetPreviewLauncher.exe`
+
+LibreSprite source location (default):
+
+- `third_party\LibreSprite`
 
 Optional:
 
@@ -52,14 +100,11 @@ If `ReferenceRoot` is omitted, the tool tracks style selection and uses:
 - Lemming strips (`anim_00.png` ... `anim_27.png`)
 - Mask strips (`mask_00.png` ... `mask_05.png`)
 
-## Visual diff
+## Preview usage
 
 - Set `Override Root` to your test assets.
 - Set `Reference Root` to a baseline asset export (or leave auto-style reference enabled).
-- The tool shows:
-  - Reference strip/frame
-  - Override strip/frame
-  - Difference image (bright pixels = larger change)
+- The preview shows side-by-side reference/override strip and frame views.
 
 You can generate a reference export with:
 

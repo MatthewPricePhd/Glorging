@@ -3,17 +3,299 @@ param(
   [string]$ReferenceRoot = "",
   [string]$StartAsset = "",
   [string]$GameRoot = "",
-  [string]$PackName = "Glorging"
+  [string]$PackName = "Glorging",
+  [string]$LibreSpriteRoot = "",
+  [string]$LibreSpriteExe = ""
 )
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public static class NativeWin {
+  [DllImport("user32.dll", SetLastError=true)]
+  public static extern IntPtr SetParent(IntPtr hWndChild, IntPtr hWndNewParent);
+  [DllImport("user32.dll", SetLastError=true)]
+  public static extern int GetWindowLong(IntPtr hWnd, int nIndex);
+  [DllImport("user32.dll", SetLastError=true)]
+  public static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
+  [DllImport("user32.dll", SetLastError=true)]
+  public static extern bool MoveWindow(IntPtr hWnd, int X, int Y, int nWidth, int nHeight, bool bRepaint);
+  [DllImport("user32.dll", SetLastError=true)]
+  public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+}
+"@
 
 [System.Windows.Forms.Application]::EnableVisualStyles()
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = Resolve-Path (Join-Path $scriptDir "..")
 $styleNames = @("Orig", "Ohno", "H94", "X91", "X92")
+$previewVersion = "v2026.02.28-embedded-libresprite"
+$settingsDir = Join-Path $env:APPDATA "Glorging"
+$settingsPath = Join-Path $settingsDir "ModAssetPreview.settings.json"
+
+function Load-PreviewSettings {
+  if (-not (Test-Path $settingsPath -PathType Leaf)) {
+    return [pscustomobject]@{
+      LibreSpriteRoot = ""
+      LibreSpriteExe = ""
+      CustomColors = @()
+      LastDrawColor = -1
+    }
+  }
+  try {
+    $raw = Get-Content $settingsPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    $loadedColors = @()
+    if ($null -ne $raw.CustomColors) {
+      foreach ($v in $raw.CustomColors) {
+        try { $loadedColors += [int]$v } catch {}
+      }
+    }
+    return [pscustomobject]@{
+      LibreSpriteRoot = [string]$raw.LibreSpriteRoot
+      LibreSpriteExe = [string]$raw.LibreSpriteExe
+      CustomColors = $loadedColors
+      LastDrawColor = $(try { [int]$raw.LastDrawColor } catch { -1 })
+    }
+  } catch {
+    return [pscustomobject]@{
+      LibreSpriteRoot = ""
+      LibreSpriteExe = ""
+      CustomColors = @()
+      LastDrawColor = -1
+    }
+  }
+}
+
+function Save-PreviewSettings {
+  param([string]$savedRoot, [string]$savedExe, [int[]]$savedCustomColors = @(), [int]$savedLastDrawColor = -1)
+  if (-not $PSBoundParameters.ContainsKey("savedCustomColors")) {
+    $savedCustomColors = $script:customPalette
+  }
+  if ($savedLastDrawColor -lt 0 -and $null -ne $script:lastDrawColor) {
+    try { $savedLastDrawColor = [System.Drawing.ColorTranslator]::ToOle($script:lastDrawColor) } catch {}
+  }
+  try {
+    Ensure-Directory $settingsDir
+    $obj = [pscustomobject]@{
+      LibreSpriteRoot = $savedRoot
+      LibreSpriteExe = $savedExe
+      CustomColors = $savedCustomColors
+      LastDrawColor = $savedLastDrawColor
+    }
+    ($obj | ConvertTo-Json -Depth 3) | Set-Content -Path $settingsPath -Encoding UTF8
+  } catch {}
+}
+
+$savedSettings = Load-PreviewSettings
+$script:customPalette = @()
+if ($null -ne $savedSettings.CustomColors -and $savedSettings.CustomColors.Count -gt 0) {
+  foreach ($v in $savedSettings.CustomColors) {
+    try { $script:customPalette += [int]$v } catch {}
+  }
+}
+
+function Normalize-CustomPalette16 {
+  param([int[]]$inputColors)
+  $out = New-Object 'System.Collections.Generic.List[int]'
+  if ($null -ne $inputColors) {
+    foreach ($c in $inputColors) {
+      try {
+        # Force every entry to a 24-bit RGB OLE color; this avoids invalid/system
+        # negative values from clearing the dialog custom-color slots.
+        $rgb24 = ([int]$c -band 0x00FFFFFF)
+        [void]$out.Add($rgb24)
+      } catch {}
+      if ($out.Count -ge 16) { break }
+    }
+  }
+  while ($out.Count -lt 16) { [void]$out.Add(0xFFFFFF) }
+  return $out.ToArray()
+}
+
+function Update-CustomPalette {
+  param([System.Drawing.Color]$colorToAdd, [string]$savedRoot, [string]$savedExe)
+  $script:lastDrawColor = [System.Drawing.Color]::FromArgb(255, $colorToAdd.R, $colorToAdd.G, $colorToAdd.B)
+  $ole = [System.Drawing.ColorTranslator]::ToOle($colorToAdd)
+  $newList = New-Object System.Collections.Generic.List[int]
+  [void]$newList.Add([int]$ole)
+  foreach ($c in $script:customPalette) {
+    if ([int]$c -ne [int]$ole) { [void]$newList.Add([int]$c) }
+    if ($newList.Count -ge 16) { break }
+  }
+  $script:customPalette = Normalize-CustomPalette16 -inputColors $newList.ToArray()
+  Save-PreviewSettings -savedRoot $savedRoot -savedExe $savedExe -savedCustomColors $script:customPalette
+}
+
+function Sync-CustomPaletteFromDialog {
+  param([System.Windows.Forms.ColorDialog]$dialog, [string]$savedRoot, [string]$savedExe, [System.Drawing.Color]$preferredColor)
+  try {
+    if ($null -eq $dialog) { return }
+    $arr = $dialog.CustomColors
+    $newList = New-Object 'System.Collections.Generic.List[int]'
+    if ($null -ne $preferredColor -and -not $preferredColor.IsEmpty) {
+      [void]$newList.Add([int][System.Drawing.ColorTranslator]::ToOle($preferredColor))
+      $script:lastDrawColor = [System.Drawing.Color]::FromArgb(255, $preferredColor.R, $preferredColor.G, $preferredColor.B)
+    }
+    # Preserve existing recents first so dialog placeholder slots cannot evict them.
+    foreach ($v in $script:customPalette) {
+      $iv = [int]$v
+      if ($newList.Contains($iv)) { continue }
+      [void]$newList.Add($iv)
+      if ($newList.Count -ge 16) { break }
+    }
+    # Then append dialog-provided custom slots (if any new colors were added there).
+    if ($null -ne $arr -and $arr.Length -gt 0 -and $newList.Count -lt 16) {
+      foreach ($v in $arr) {
+        $iv = [int]$v
+        if ($newList.Contains($iv)) { continue }
+        [void]$newList.Add($iv)
+        if ($newList.Count -ge 16) { break }
+      }
+    }
+    $script:customPalette = Normalize-CustomPalette16 -inputColors $newList.ToArray()
+    Save-PreviewSettings -savedRoot $savedRoot -savedExe $savedExe -savedCustomColors $script:customPalette
+  } catch {}
+}
+
+function Set-ColorDialogPaletteSafe {
+  param([System.Windows.Forms.ColorDialog]$dialog, [int[]]$colors)
+  if ($null -eq $dialog) { return }
+  $normalized = Normalize-CustomPalette16 -inputColors $colors
+  try {
+    $dialog.CustomColors = $normalized
+  } catch {
+    # Keep this visible in-session so palette regressions are diagnosable.
+    if ($null -ne $script:editorStatus) {
+      $script:editorStatus.Text = "Status: failed to apply color palette (custom slots may appear blank)."
+    }
+  }
+}
+
+function Show-ColorDialogSafe {
+  param([System.Windows.Forms.ColorDialog]$dialog, [System.Windows.Forms.IWin32Window]$owner)
+  if ($null -eq $dialog) { return [System.Windows.Forms.DialogResult]::Cancel }
+  try {
+    if ($null -ne $owner) {
+      return $dialog.ShowDialog($owner)
+    }
+    return $dialog.ShowDialog()
+  } catch {
+    [void][System.Windows.Forms.MessageBox]::Show(
+      $owner,
+      "Color picker failed to open. Try launching with an STA host or reset preview settings.`n`n$($_.Exception.Message)",
+      "Color Picker Error",
+      [System.Windows.Forms.MessageBoxButtons]::OK,
+      [System.Windows.Forms.MessageBoxIcon]::Warning
+    )
+    return [System.Windows.Forms.DialogResult]::Cancel
+  }
+}
+
+if ($script:customPalette.Count -gt 0) {
+  $script:customPalette = Normalize-CustomPalette16 -inputColors $script:customPalette
+}
+
+$defaultDrawColor = [System.Drawing.Color]::FromArgb(255, 235, 235, 235)
+$script:lastDrawColor = $defaultDrawColor
+try {
+  $savedOle = [int]$savedSettings.LastDrawColor
+  if ($savedOle -ge 0) {
+    $tmpColor = [System.Drawing.ColorTranslator]::FromOle($savedOle)
+    $script:lastDrawColor = [System.Drawing.Color]::FromArgb(255, $tmpColor.R, $tmpColor.G, $tmpColor.B)
+  }
+} catch {}
+
+if ([string]::IsNullOrWhiteSpace($LibreSpriteRoot) -and -not [string]::IsNullOrWhiteSpace($savedSettings.LibreSpriteRoot)) {
+  $LibreSpriteRoot = $savedSettings.LibreSpriteRoot
+}
+if ([string]::IsNullOrWhiteSpace($LibreSpriteRoot)) {
+  $LibreSpriteRoot = Join-Path $repoRoot "third_party\LibreSprite"
+}
+if ([string]::IsNullOrWhiteSpace($LibreSpriteExe) -and -not [string]::IsNullOrWhiteSpace($savedSettings.LibreSpriteExe)) {
+  $LibreSpriteExe = $savedSettings.LibreSpriteExe
+}
+
+function Resolve-LibreSpriteExe {
+  param([string]$rootPath, [string]$explicitExe)
+  if (-not [string]::IsNullOrWhiteSpace($explicitExe) -and (Test-Path $explicitExe -PathType Leaf)) {
+    return [System.IO.Path]::GetFullPath($explicitExe)
+  }
+  $candidates = @(
+    (Join-Path $rootPath "build\bin\libresprite.exe"),
+    (Join-Path $rootPath "build\Release\libresprite.exe"),
+    (Join-Path $rootPath "build\RelWithDebInfo\libresprite.exe"),
+    (Join-Path $rootPath "bin\libresprite.exe")
+  )
+  foreach ($c in $candidates) {
+    if (Test-Path $c -PathType Leaf) { return [System.IO.Path]::GetFullPath($c) }
+  }
+  return ""
+}
+
+$LibreSpriteExe = Resolve-LibreSpriteExe -rootPath $LibreSpriteRoot -explicitExe $LibreSpriteExe
+
+function Find-LibreSpriteExeAuto {
+  param([string]$rootPath)
+  $candidates = New-Object System.Collections.Generic.List[string]
+  if (-not [string]::IsNullOrWhiteSpace($rootPath)) {
+    [void]$candidates.Add((Join-Path $rootPath "build\bin\libresprite.exe"))
+    [void]$candidates.Add((Join-Path $rootPath "build\Release\libresprite.exe"))
+    [void]$candidates.Add((Join-Path $rootPath "build\RelWithDebInfo\libresprite.exe"))
+    [void]$candidates.Add((Join-Path $rootPath "bin\libresprite.exe"))
+  }
+  [void]$candidates.Add((Join-Path $repoRoot "third_party\LibreSprite\build\bin\libresprite.exe"))
+  [void]$candidates.Add((Join-Path $repoRoot "third_party\LibreSprite\build\Release\libresprite.exe"))
+  [void]$candidates.Add((Join-Path $env:ProgramFiles "LibreSprite\libresprite.exe"))
+  [void]$candidates.Add((Join-Path $env:LOCALAPPDATA "Programs\LibreSprite\libresprite.exe"))
+
+  try {
+    $w = where.exe libresprite 2>$null
+    if ($LASTEXITCODE -eq 0 -and $w) {
+      foreach ($line in $w) {
+        if (-not [string]::IsNullOrWhiteSpace($line)) { [void]$candidates.Add([string]$line) }
+      }
+    }
+  } catch {}
+
+  foreach ($c in $candidates) {
+    if (-not [string]::IsNullOrWhiteSpace($c) -and (Test-Path $c -PathType Leaf)) {
+      return [System.IO.Path]::GetFullPath($c)
+    }
+  }
+
+  $searchRoots = @(
+    (Join-Path $repoRoot "third_party\LibreSprite"),
+    $rootPath
+  )
+  foreach ($sr in $searchRoots) {
+    if ([string]::IsNullOrWhiteSpace($sr) -or -not (Test-Path $sr -PathType Container)) { continue }
+    try {
+      $foundList = @(Get-ChildItem -Path $sr -Recurse -Filter "libresprite.exe" -File -ErrorAction SilentlyContinue)
+      if ($foundList.Count -gt 0) {
+        $best = $null
+        foreach ($f in $foundList) {
+          if ($null -eq $best -or $f.LastWriteTime -gt $best.LastWriteTime) { $best = $f }
+        }
+        if ($null -ne $best) {
+          return [System.IO.Path]::GetFullPath($best.FullName)
+        }
+      }
+    } catch {}
+  }
+
+  return ""
+}
+
+if ([string]::IsNullOrWhiteSpace($LibreSpriteExe) -or -not (Test-Path $LibreSpriteExe -PathType Leaf)) {
+  $autoExe = Find-LibreSpriteExeAuto -rootPath $LibreSpriteRoot
+  if (-not [string]::IsNullOrWhiteSpace($autoExe)) {
+    $LibreSpriteExe = $autoExe
+    Save-PreviewSettings -savedRoot $LibreSpriteRoot -savedExe $LibreSpriteExe
+  }
+}
 
 function Test-GameRoot {
   param([string]$path)
@@ -254,7 +536,19 @@ function Load-BitmapSafe {
     $fileStream = [System.IO.File]::Open($path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
     try {
       $raw = [System.Drawing.Bitmap]::FromStream($fileStream)
-      return [System.Drawing.Bitmap]$raw.Clone()
+      try {
+        # Always convert to 32bpp ARGB so SetPixel editing works for indexed PNGs.
+        $editable = New-Object System.Drawing.Bitmap($raw.Width, $raw.Height, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+        $g = [System.Drawing.Graphics]::FromImage($editable)
+        try {
+          $g.DrawImage($raw, 0, 0, $raw.Width, $raw.Height)
+        } finally {
+          $g.Dispose()
+        }
+        return $editable
+      } finally {
+        $raw.Dispose()
+      }
     } finally {
       $fileStream.Dispose()
     }
@@ -321,8 +615,8 @@ function New-PreviewBox {
   $picture.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
   $picture.BackColor = [System.Drawing.Color]::FromArgb(18, 18, 18)
 
-  $panel.Controls.Add($picture)
-  $panel.Controls.Add($label)
+  [void]$panel.Controls.Add($picture)
+  [void]$panel.Controls.Add($label)
 
   return [pscustomobject]@{
     Panel = $panel
@@ -332,7 +626,7 @@ function New-PreviewBox {
 }
 
 $form = New-Object System.Windows.Forms.Form
-$form.Text = "Glorging Mod Asset Preview"
+$form.Text = "Glorging Mod Asset Preview ($previewVersion)"
 $form.Width = 1500
 $form.Height = 950
 $form.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
@@ -446,31 +740,36 @@ $launchGameButton = New-Object System.Windows.Forms.Button
 $launchGameButton.Text = "Launch Game"
 $launchGameButton.Dock = [System.Windows.Forms.DockStyle]::Fill
 
-$toolbar.Controls.Add($overrideLabel, 0, 0)
-$toolbar.Controls.Add($overrideText, 1, 0)
-$toolbar.Controls.Add($overrideBrowse, 2, 0)
-$toolbar.Controls.Add($referenceLabel, 3, 0)
-$toolbar.Controls.Add($referenceText, 4, 0)
-$toolbar.Controls.Add($referenceBrowse, 5, 0)
-$toolbar.Controls.Add($gameLabel, 0, 1)
-$toolbar.Controls.Add($gameCombo, 1, 1)
-$toolbar.Controls.Add($gameBrowse, 2, 1)
-$toolbar.Controls.Add($styleLabel, 3, 1)
-$toolbar.Controls.Add($styleCombo, 4, 1)
-$toolbar.Controls.Add($ensureBaselineButton, 5, 1)
-$toolbar.Controls.Add($reloadButton, 0, 2)
-$toolbar.Controls.Add($autoPlay, 1, 2)
-$toolbar.Controls.Add($frameSlider, 4, 2)
-$toolbar.Controls.Add($frameLabel, 5, 2)
-$toolbar.Controls.Add($openPackButton, 0, 3)
-$toolbar.Controls.Add($launchGameButton, 1, 3)
+$openOverrideAssetButton = New-Object System.Windows.Forms.Button
+$openOverrideAssetButton.Text = "Open Current Override File"
+$openOverrideAssetButton.Dock = [System.Windows.Forms.DockStyle]::Fill
+
+[void]$toolbar.Controls.Add($overrideLabel, 0, 0)
+[void]$toolbar.Controls.Add($overrideText, 1, 0)
+[void]$toolbar.Controls.Add($overrideBrowse, 2, 0)
+[void]$toolbar.Controls.Add($referenceLabel, 3, 0)
+[void]$toolbar.Controls.Add($referenceText, 4, 0)
+[void]$toolbar.Controls.Add($referenceBrowse, 5, 0)
+[void]$toolbar.Controls.Add($gameLabel, 0, 1)
+[void]$toolbar.Controls.Add($gameCombo, 1, 1)
+[void]$toolbar.Controls.Add($gameBrowse, 2, 1)
+[void]$toolbar.Controls.Add($styleLabel, 3, 1)
+[void]$toolbar.Controls.Add($styleCombo, 4, 1)
+[void]$toolbar.Controls.Add($ensureBaselineButton, 5, 1)
+[void]$toolbar.Controls.Add($reloadButton, 0, 2)
+[void]$toolbar.Controls.Add($autoPlay, 1, 2)
+[void]$toolbar.Controls.Add($frameSlider, 4, 2)
+[void]$toolbar.Controls.Add($frameLabel, 5, 2)
+[void]$toolbar.Controls.Add($openPackButton, 0, 3)
+[void]$toolbar.Controls.Add($launchGameButton, 1, 3)
+[void]$toolbar.Controls.Add($openOverrideAssetButton, 2, 3)
 
 $mainSplit = New-Object System.Windows.Forms.SplitContainer
 $mainSplit.Dock = [System.Windows.Forms.DockStyle]::Fill
 $mainSplit.Orientation = [System.Windows.Forms.Orientation]::Vertical
 $mainSplit.FixedPanel = [System.Windows.Forms.FixedPanel]::Panel1
-$mainSplit.Panel1MinSize = 260
-$mainSplit.SplitterDistance = 320
+$mainSplit.Panel1MinSize = 420
+$mainSplit.SplitterDistance = 520
 
 $assetList = New-Object System.Windows.Forms.ListBox
 $assetList.Dock = [System.Windows.Forms.DockStyle]::Fill
@@ -479,7 +778,7 @@ foreach ($spec in $assetSpecs) {
   [void]$assetList.Items.Add($spec.Display)
 }
 
-$mainSplit.Panel1.Controls.Add($assetList)
+[void]$mainSplit.Panel1.Controls.Add($assetList)
 
 $rightLayout = New-Object System.Windows.Forms.TableLayoutPanel
 $rightLayout.Dock = [System.Windows.Forms.DockStyle]::Fill
@@ -496,8 +795,8 @@ $liveGrid.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.
 
 $liveReference = New-PreviewBox "Live Reference"
 $liveOverride = New-PreviewBox "Live Override"
-$liveGrid.Controls.Add($liveReference.Panel, 0, 0)
-$liveGrid.Controls.Add($liveOverride.Panel, 1, 0)
+[void]$liveGrid.Controls.Add($liveReference.Panel, 0, 0)
+[void]$liveGrid.Controls.Add($liveOverride.Panel, 1, 0)
 
 $rightSplit = New-Object System.Windows.Forms.SplitContainer
 $rightSplit.Dock = [System.Windows.Forms.DockStyle]::Fill
@@ -506,34 +805,33 @@ $rightSplit.FixedPanel = [System.Windows.Forms.FixedPanel]::None
 
 $diagLayout = New-Object System.Windows.Forms.TableLayoutPanel
 $diagLayout.Dock = [System.Windows.Forms.DockStyle]::Fill
-$diagLayout.ColumnCount = 3
+$diagLayout.ColumnCount = 2
 $diagLayout.RowCount = 2
-$diagLayout.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 33.3333)))
-$diagLayout.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 33.3333)))
-$diagLayout.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 33.3333)))
+$diagLayout.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 50)))
+$diagLayout.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 50)))
 $diagLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 50)))
 $diagLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 50)))
 
 $stripReference = New-PreviewBox "Reference Strip"
 $stripOverride = New-PreviewBox "Override Strip"
-$stripDiff = New-PreviewBox "Strip Diff"
 $frameReference = New-PreviewBox "Reference Frame"
 $frameOverride = New-PreviewBox "Override Frame"
-$frameDiff = New-PreviewBox "Frame Diff"
-$diagLayout.Controls.Add($stripReference.Panel, 0, 0)
-$diagLayout.Controls.Add($stripOverride.Panel, 1, 0)
-$diagLayout.Controls.Add($stripDiff.Panel, 2, 0)
-$diagLayout.Controls.Add($frameReference.Panel, 0, 1)
-$diagLayout.Controls.Add($frameOverride.Panel, 1, 1)
-$diagLayout.Controls.Add($frameDiff.Panel, 2, 1)
+[void]$diagLayout.Controls.Add($stripReference.Panel, 0, 0)
+[void]$diagLayout.Controls.Add($stripOverride.Panel, 1, 0)
+[void]$diagLayout.Controls.Add($frameReference.Panel, 0, 1)
+[void]$diagLayout.Controls.Add($frameOverride.Panel, 1, 1)
 
-$rightSplit.Panel1.Controls.Add($liveGrid)
-$rightSplit.Panel2.Controls.Add($diagLayout)
+[void]$rightSplit.Panel1.Controls.Add($liveGrid)
+[void]$rightSplit.Panel2.Controls.Add($diagLayout)
 
-$rightLayout.Controls.Add($rightSplit, 0, 0)
-$mainSplit.Panel2.Controls.Add($rightLayout)
+[void]$rightLayout.Controls.Add($rightSplit, 0, 0)
+[void]$mainSplit.Panel2.Controls.Add($rightLayout)
 
 $form.Add_Shown({
+  $targetLeftWidth = 520
+  if ($mainSplit.Width -gt ($targetLeftWidth + 220)) {
+    $mainSplit.SplitterDistance = $targetLeftWidth
+  }
   $targetDiagWidth = 260
   $target = $rightSplit.Width - $targetDiagWidth
   if ($target -gt 120 -and $target -lt ($rightSplit.Width - 120)) {
@@ -541,16 +839,173 @@ $form.Add_Shown({
   }
 })
 
+$tabControl = New-Object System.Windows.Forms.TabControl
+$tabControl.Dock = [System.Windows.Forms.DockStyle]::Fill
+
+$previewTab = New-Object System.Windows.Forms.TabPage
+$previewTab.Text = "Preview"
+[void]$previewTab.Controls.Add($mainSplit)
+[void]$tabControl.TabPages.Add($previewTab)
+
+$editorTab = New-Object System.Windows.Forms.TabPage
+$editorTab.Text = "Editor"
+
+$editorTabs = New-Object System.Windows.Forms.TabControl
+$editorTabs.Dock = [System.Windows.Forms.DockStyle]::Fill
+
+$editorBasicTab = New-Object System.Windows.Forms.TabPage
+$editorBasicTab.Text = "Basic"
+
+$editorAdvancedTab = New-Object System.Windows.Forms.TabPage
+$editorAdvancedTab.Text = "Advanced"
+
+$basicLayout = New-Object System.Windows.Forms.TableLayoutPanel
+$basicLayout.Dock = [System.Windows.Forms.DockStyle]::Fill
+$basicLayout.ColumnCount = 1
+$basicLayout.RowCount = 4
+$basicLayout.Padding = New-Object System.Windows.Forms.Padding(12)
+$basicLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
+$basicLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
+$basicLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
+$basicLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 100)))
+
+$editorLayout = New-Object System.Windows.Forms.TableLayoutPanel
+$editorLayout.Dock = [System.Windows.Forms.DockStyle]::Fill
+$editorLayout.ColumnCount = 3
+$editorLayout.RowCount = 8
+$editorLayout.Padding = New-Object System.Windows.Forms.Padding(12)
+$editorLayout.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Absolute, 160)))
+$editorLayout.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 100)))
+$editorLayout.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Absolute, 170)))
+$editorLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
+$editorLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
+$editorLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
+$editorLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
+$editorLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
+$editorLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
+$editorLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 100)))
+$editorLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
+
+$libRootLabel = New-Object System.Windows.Forms.Label
+$libRootLabel.Text = "LibreSprite Source"
+$libRootLabel.Dock = [System.Windows.Forms.DockStyle]::Fill
+$libRootLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleLeft
+
+$libRootText = New-Object System.Windows.Forms.TextBox
+$libRootText.Dock = [System.Windows.Forms.DockStyle]::Fill
+$libRootText.Text = $LibreSpriteRoot
+
+$libRootBrowse = New-Object System.Windows.Forms.Button
+$libRootBrowse.Text = "Browse Source"
+$libRootBrowse.Dock = [System.Windows.Forms.DockStyle]::Fill
+
+$libExeLabel = New-Object System.Windows.Forms.Label
+$libExeLabel.Text = "LibreSprite EXE"
+$libExeLabel.Dock = [System.Windows.Forms.DockStyle]::Fill
+$libExeLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleLeft
+
+$libExeText = New-Object System.Windows.Forms.TextBox
+$libExeText.Dock = [System.Windows.Forms.DockStyle]::Fill
+$libExeText.Text = $LibreSpriteExe
+
+$libExeBrowse = New-Object System.Windows.Forms.Button
+$libExeBrowse.Text = "Browse EXE"
+$libExeBrowse.Dock = [System.Windows.Forms.DockStyle]::Fill
+
+$cloneUpdateButton = New-Object System.Windows.Forms.Button
+$cloneUpdateButton.Text = "Setup LibreSprite Source (Advanced)"
+$cloneUpdateButton.Dock = [System.Windows.Forms.DockStyle]::Fill
+
+$openSourceButton = New-Object System.Windows.Forms.Button
+$openSourceButton.Text = "Open Source Folder"
+$openSourceButton.Dock = [System.Windows.Forms.DockStyle]::Fill
+
+$launchLibreButton = New-Object System.Windows.Forms.Button
+$launchLibreButton.Text = "Open LibreSprite (External)"
+$launchLibreButton.Dock = [System.Windows.Forms.DockStyle]::Fill
+
+$editAssetButton = New-Object System.Windows.Forms.Button
+$editAssetButton.Text = "Open Selected Asset In Advanced Panel"
+$editAssetButton.Dock = [System.Windows.Forms.DockStyle]::Fill
+
+$integratedEditButton = New-Object System.Windows.Forms.Button
+$integratedEditButton.Text = "Edit Selected Asset Here (Mini Tools)"
+$integratedEditButton.Dock = [System.Windows.Forms.DockStyle]::Top
+$integratedEditButton.Height = 40
+
+$editorHelp = New-Object System.Windows.Forms.Label
+$editorHelp.Text = "Basic workflow: select an asset in Preview, then click the mini-editor button below."
+$editorHelp.AutoSize = $true
+$editorHelp.MaximumSize = New-Object System.Drawing.Size(1000, 0)
+$editorHelp.Dock = [System.Windows.Forms.DockStyle]::Fill
+
+$advancedHelp = New-Object System.Windows.Forms.Label
+$advancedHelp.Text = "Advanced workflow: open selected asset in embedded LibreSprite panel."
+$advancedHelp.AutoSize = $true
+$advancedHelp.MaximumSize = New-Object System.Drawing.Size(1000, 0)
+$advancedHelp.Dock = [System.Windows.Forms.DockStyle]::Fill
+
+$editorStatus = New-Object System.Windows.Forms.Label
+$editorStatus.Text = "Status: idle"
+$editorStatus.AutoSize = $true
+$editorStatus.Dock = [System.Windows.Forms.DockStyle]::Fill
+$editorStatus.Padding = New-Object System.Windows.Forms.Padding(0, 8, 0, 0)
+
+[void]$editorLayout.Controls.Add($libRootLabel, 0, 0)
+[void]$editorLayout.Controls.Add($libRootText, 1, 0)
+[void]$editorLayout.Controls.Add($libRootBrowse, 2, 0)
+[void]$editorLayout.Controls.Add($libExeLabel, 0, 1)
+[void]$editorLayout.Controls.Add($libExeText, 1, 1)
+[void]$editorLayout.Controls.Add($libExeBrowse, 2, 1)
+[void]$editorLayout.Controls.Add($cloneUpdateButton, 0, 2)
+[void]$editorLayout.Controls.Add($openSourceButton, 2, 2)
+[void]$editorLayout.Controls.Add($launchLibreButton, 0, 3)
+[void]$editorLayout.Controls.Add($editAssetButton, 2, 3)
+[void]$editorLayout.Controls.Add($advancedHelp, 0, 4)
+$editorLayout.SetColumnSpan($advancedHelp, 3)
+
+$advancedEditorHost = New-Object System.Windows.Forms.Panel
+$advancedEditorHost.Dock = [System.Windows.Forms.DockStyle]::Fill
+$advancedEditorHost.Visible = $false
+$advancedEditorHost.BackColor = [System.Drawing.Color]::FromArgb(28, 28, 28)
+[void]$editorLayout.Controls.Add($advancedEditorHost, 0, 6)
+$editorLayout.SetColumnSpan($advancedEditorHost, 3)
+
+[void]$editorLayout.Controls.Add($editorStatus, 0, 7)
+$editorLayout.SetColumnSpan($editorStatus, 3)
+
+[void]$basicLayout.Controls.Add($editorHelp, 0, 0)
+[void]$basicLayout.Controls.Add($integratedEditButton, 0, 1)
+
+$basicHint = New-Object System.Windows.Forms.Label
+$basicHint.Text = "If no override asset file exists yet, it is auto-seeded from the current reference style."
+$basicHint.AutoSize = $true
+$basicHint.Dock = [System.Windows.Forms.DockStyle]::Top
+[void]$basicLayout.Controls.Add($basicHint, 0, 2)
+
+$integratedEditorHost = New-Object System.Windows.Forms.Panel
+$integratedEditorHost.Dock = [System.Windows.Forms.DockStyle]::Fill
+$integratedEditorHost.Visible = $false
+$integratedEditorHost.BackColor = [System.Drawing.Color]::FromArgb(28, 28, 28)
+[void]$basicLayout.Controls.Add($integratedEditorHost, 0, 3)
+
+[void]$editorBasicTab.Controls.Add($basicLayout)
+[void]$editorAdvancedTab.Controls.Add($editorLayout)
+[void]$editorTabs.TabPages.Add($editorBasicTab)
+[void]$editorTabs.TabPages.Add($editorAdvancedTab)
+[void]$editorTab.Controls.Add($editorTabs)
+[void]$tabControl.TabPages.Add($editorTab)
+
 $statusLabel = New-Object System.Windows.Forms.Label
 $statusLabel.Dock = [System.Windows.Forms.DockStyle]::Fill
 $statusLabel.Padding = New-Object System.Windows.Forms.Padding(8, 6, 8, 6)
 $statusLabel.AutoSize = $true
 $statusLabel.Text = "Status"
 
-$rootLayout.Controls.Add($toolbar, 0, 0)
-$rootLayout.Controls.Add($mainSplit, 0, 1)
-$rootLayout.Controls.Add($statusLabel, 0, 2)
-$form.Controls.Add($rootLayout)
+[void]$rootLayout.Controls.Add($toolbar, 0, 0)
+[void]$rootLayout.Controls.Add($tabControl, 0, 1)
+[void]$rootLayout.Controls.Add($statusLabel, 0, 2)
+[void]$form.Controls.Add($rootLayout)
 
 $timer = New-Object System.Windows.Forms.Timer
 $timer.Interval = 120
@@ -560,6 +1015,10 @@ $currentSpec = $null
 $currentRefStrip = $null
 $currentOverrideStrip = $null
 $currentFrameIndex = 0
+$script:embeddedLibreProc = $null
+$script:embeddedLibreHwnd = [IntPtr]::Zero
+$script:embeddedAssetPath = ""
+$script:embeddedAssetWriteUtc = [datetime]::MinValue
 
 function Dispose-CurrentStripState {
   if ($null -ne $script:currentRefStrip) { $script:currentRefStrip.Dispose(); $script:currentRefStrip = $null }
@@ -607,13 +1066,501 @@ function Launch-GameExe {
   Start-Process -FilePath $exe -WorkingDirectory $GameRoot | Out-Null
 }
 
+function Select-ExecutableFile {
+  param([string]$title, [string]$initialDir)
+  $dlg = New-Object System.Windows.Forms.OpenFileDialog
+  $dlg.Title = $title
+  $dlg.Filter = "Executable (*.exe)|*.exe|All files (*.*)|*.*"
+  if (-not [string]::IsNullOrWhiteSpace($initialDir) -and (Test-Path $initialDir -PathType Container)) {
+    $dlg.InitialDirectory = $initialDir
+  }
+  if ($dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+    return $dlg.FileName
+  }
+  return $null
+}
+
+function Get-SelectedAssetPath {
+  if ($assetList.SelectedIndex -lt 0) { return $null }
+  $spec = $assetSpecs[$assetList.SelectedIndex]
+  if ($null -eq $spec) { return $null }
+  return Join-Path $overrideText.Text $spec.RelPath
+}
+
+function Open-CurrentOverrideAsset {
+  $assetPath = Get-SelectedAssetPath
+  if ([string]::IsNullOrWhiteSpace($assetPath)) {
+    [void][System.Windows.Forms.MessageBox]::Show($form, "Select an asset first.", "Open Override", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+    return
+  }
+  Ensure-Directory (Split-Path -Parent $assetPath)
+  if (-not (Test-Path $assetPath -PathType Leaf)) {
+    [void][System.Windows.Forms.MessageBox]::Show($form, "Override file does not exist yet:`n$assetPath`n`nSave from Editor first.", "Open Override", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+    Start-Process -FilePath "explorer.exe" -ArgumentList ('"/select,{0}"' -f $assetPath) | Out-Null
+    return
+  }
+  Start-Process -FilePath "explorer.exe" -ArgumentList ('"/select,{0}"' -f $assetPath) | Out-Null
+}
+
+function Open-IntegratedPixelEditor {
+  param([string]$assetPath, $spec)
+  if ($null -eq $spec) { return }
+  if ($spec.Kind -ne "strip") { [void][System.Windows.Forms.MessageBox]::Show($form, "Integrated editor is optimized for strip assets.`nUse LibreSprite for large UI backgrounds.", "Integrated Editor", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information); return }
+  $workingPath=$assetPath; $seededFromReference=$false
+  if (-not (Test-Path $workingPath -PathType Leaf)) { $refCandidate=Join-Path $referenceText.Text $spec.RelPath; if (Test-Path $refCandidate -PathType Leaf) { Ensure-Directory (Split-Path -Parent $workingPath); Copy-Item $refCandidate $workingPath -Force; $seededFromReference=$true } else { [void][System.Windows.Forms.MessageBox]::Show($form, "Asset file missing and no reference file found to seed it.`n$workingPath", "Integrated Editor", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning); return } }
+  $srcBmp=Load-BitmapSafe $workingPath; if ($null -eq $srcBmp) { [void][System.Windows.Forms.MessageBox]::Show($form, "Unable to open asset for editing:`n$workingPath", "Integrated Editor", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error); return }
+  $origBmp=[System.Drawing.Bitmap]$srcBmp.Clone(); $prevAutoPlay=$autoPlay.Checked; $autoPlay.Checked=$false
+  $editFrameCount=[Math]::Max(1,[Math]::Min([int]$spec.Frames,[int][Math]::Floor($srcBmp.Height/[Math]::Max(1,[int]$spec.FrameH))))
+  $integratedEditorHost.SuspendLayout()
+  try {
+    foreach($ctl in @($integratedEditorHost.Controls)){$ctl.Dispose()}; $integratedEditorHost.Controls.Clear(); $integratedEditorHost.Visible=$true; $editorHelp.Visible=$false
+    $top=New-Object System.Windows.Forms.FlowLayoutPanel; $top.Dock='Top'; $top.Height=42; $top.Padding=New-Object System.Windows.Forms.Padding(8,6,8,6); $top.WrapContents=$false; $top.BackColor=[System.Drawing.SystemColors]::Control; $top.ForeColor=[System.Drawing.SystemColors]::ControlText
+    $frameLab=New-Object System.Windows.Forms.Label; $frameLab.Text='Frame'; $frameLab.AutoSize=$true; $frameLab.Margin=New-Object System.Windows.Forms.Padding(2,10,4,2)
+    $prevFrameBtn=New-Object System.Windows.Forms.Button; $prevFrameBtn.Text='<'; $prevFrameBtn.Width=28; $prevFrameBtn.Height=24; $prevFrameBtn.Margin=New-Object System.Windows.Forms.Padding(2,6,2,2)
+    $framePick=New-Object System.Windows.Forms.NumericUpDown; $framePick.Minimum=0; $framePick.Maximum=[Math]::Max($editFrameCount-1,0); $framePick.Width=60
+    $nextFrameBtn=New-Object System.Windows.Forms.Button; $nextFrameBtn.Text='>'; $nextFrameBtn.Width=28; $nextFrameBtn.Height=24; $nextFrameBtn.Margin=New-Object System.Windows.Forms.Padding(2,6,8,2)
+    $frameInfo=New-Object System.Windows.Forms.Label; $frameInfo.AutoSize=$true; $frameInfo.Margin=New-Object System.Windows.Forms.Padding(2,10,10,2)
+    $zoomLab=New-Object System.Windows.Forms.Label; $zoomLab.Text='Zoom'; $zoomLab.AutoSize=$true; $zoomLab.Margin=New-Object System.Windows.Forms.Padding(12,10,4,2)
+    $zoomOutBtn=New-Object System.Windows.Forms.Button; $zoomOutBtn.Text='-'; $zoomOutBtn.Width=28; $zoomOutBtn.Height=24; $zoomOutBtn.Margin=New-Object System.Windows.Forms.Padding(2,6,2,2)
+    $zoomPick=New-Object System.Windows.Forms.NumericUpDown; $zoomPick.Minimum=4; $zoomPick.Maximum=96; $zoomPick.Value=35; $zoomPick.Width=60
+    $zoomInBtn=New-Object System.Windows.Forms.Button; $zoomInBtn.Text='+'; $zoomInBtn.Width=28; $zoomInBtn.Height=24; $zoomInBtn.Margin=New-Object System.Windows.Forms.Padding(2,6,8,2)
+    $pickColor=New-Object System.Windows.Forms.Button; $pickColor.Text='Add Color'; $pickColor.Width=78
+    $eyeDropper=New-Object System.Windows.Forms.CheckBox; $eyeDropper.Text='Pick'; $eyeDropper.AutoSize=$true; $eyeDropper.Margin=New-Object System.Windows.Forms.Padding(6,10,4,2)
+    $fillTool=New-Object System.Windows.Forms.CheckBox; $fillTool.Text='Fill'; $fillTool.AutoSize=$true; $fillTool.Margin=New-Object System.Windows.Forms.Padding(6,10,4,2)
+    $eraser=New-Object System.Windows.Forms.CheckBox; $eraser.Text='Eraser'; $eraser.AutoSize=$true; $eraser.Margin=New-Object System.Windows.Forms.Padding(8,10,4,2)
+    $fitCheck=New-Object System.Windows.Forms.CheckBox; $fitCheck.Text='Fit'; $fitCheck.AutoSize=$true; $fitCheck.Margin=New-Object System.Windows.Forms.Padding(6,10,4,2)
+    $saveBtn=New-Object System.Windows.Forms.Button; $saveBtn.Text='Save'; $saveBtn.Width=70; $saveBtn.Margin=New-Object System.Windows.Forms.Padding(16,6,4,2)
+    $backBtn=New-Object System.Windows.Forms.Button; $backBtn.Text='Back'; $backBtn.Width=70; $backBtn.Margin=New-Object System.Windows.Forms.Padding(8,6,4,2)
+    $status=New-Object System.Windows.Forms.Label; $status.Text="Editing $workingPath | Left-click/drag = paint"; $status.AutoSize=$true; $status.Margin=New-Object System.Windows.Forms.Padding(16,10,4,2)
+    foreach($c in @($frameLab,$prevFrameBtn,$framePick,$nextFrameBtn,$frameInfo,$zoomLab,$zoomOutBtn,$zoomPick,$zoomInBtn,$fitCheck,$pickColor,$eyeDropper,$fillTool,$eraser,$saveBtn,$backBtn,$status)){[void]$top.Controls.Add($c)}
+    foreach($b in @($prevFrameBtn,$nextFrameBtn,$zoomOutBtn,$zoomInBtn,$saveBtn,$backBtn)){ $b.UseVisualStyleBackColor=$true; $b.FlatStyle='Standard'; $b.ForeColor=[System.Drawing.SystemColors]::ControlText; $b.BackColor=[System.Drawing.SystemColors]::Control }
+    foreach($lbl in @($frameLab,$frameInfo,$zoomLab,$status,$eyeDropper,$fillTool,$eraser,$fitCheck)){ $lbl.ForeColor=[System.Drawing.SystemColors]::ControlText }
+
+    $split=New-Object System.Windows.Forms.SplitContainer; $split.Dock='Fill'; $split.Orientation='Vertical'; $split.FixedPanel='Panel1'; $split.Panel1MinSize=380; $split.SplitterDistance=500
+    $paletteHost=New-Object System.Windows.Forms.Panel; $paletteHost.Dock='Fill'; $paletteHost.BackColor=[System.Drawing.SystemColors]::Control; $paletteHost.Padding=New-Object System.Windows.Forms.Padding(8); $paletteHost.AutoScroll=$true; $paletteHost.MinimumSize=New-Object System.Drawing.Size(380,0)
+    $pl=New-Object System.Windows.Forms.TableLayoutPanel; $pl.Dock='Fill'; $pl.AutoSize=$false; $pl.ColumnCount=1; $pl.RowCount=12; $pl.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent,100))); for($i=0;$i -lt 11;$i++){ $pl.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize))) }; $pl.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent,100)))
+    $drawLabel=New-Object System.Windows.Forms.Label; $drawLabel.Text='Draw Color'; $drawLabel.AutoSize=$true; $drawLabel.ForeColor=[System.Drawing.SystemColors]::ControlText
+    $drawSwatch=New-Object System.Windows.Forms.Panel; $drawSwatch.Width=120; $drawSwatch.Height=24; $drawSwatch.BorderStyle='FixedSingle'
+    $hexRow=New-Object System.Windows.Forms.FlowLayoutPanel; $hexRow.AutoSize=$true; $hexRow.WrapContents=$false; $hexRow.Dock='Top'
+    $hexBox=New-Object System.Windows.Forms.TextBox; $hexBox.Width=90; $hexBox.Text='#FFFFFF'
+    $hexSetBtn=New-Object System.Windows.Forms.Button; $hexSetBtn.Text='Set'; $hexSetBtn.Width=52
+    $hexAddBtn=New-Object System.Windows.Forms.Button; $hexAddBtn.Text='Add'; $hexAddBtn.Width=52
+    foreach($c in @($hexBox,$hexSetBtn,$hexAddBtn)){[void]$hexRow.Controls.Add($c)}
+    $defaultHdr=New-Object System.Windows.Forms.Label; $defaultHdr.Text='Default Palette (Strip Analysis)'; $defaultHdr.AutoSize=$true; $defaultHdr.ForeColor=[System.Drawing.SystemColors]::ControlText
+    $defaultFlow=New-Object System.Windows.Forms.FlowLayoutPanel; $defaultFlow.AutoSize=$true; $defaultFlow.WrapContents=$true; $defaultFlow.Margin=New-Object System.Windows.Forms.Padding(0,2,0,6); $defaultFlow.Dock='Top'
+    $customHdr=New-Object System.Windows.Forms.Label; $customHdr.Text='Custom Palette'; $customHdr.AutoSize=$true; $customHdr.ForeColor=[System.Drawing.SystemColors]::ControlText
+    $customFlow=New-Object System.Windows.Forms.FlowLayoutPanel; $customFlow.AutoSize=$true; $customFlow.WrapContents=$true; $customFlow.Margin=New-Object System.Windows.Forms.Padding(0,2,0,6); $customFlow.Dock='Top'
+    $analysisRow=New-Object System.Windows.Forms.FlowLayoutPanel; $analysisRow.AutoSize=$true; $analysisRow.WrapContents=$false; $analysisRow.Dock='Top'
+    $analyzeBtn=New-Object System.Windows.Forms.Button; $analyzeBtn.Text='Analyze Strip'; $analyzeBtn.Width=96
+    $clearCustomBtn=New-Object System.Windows.Forms.Button; $clearCustomBtn.Text='Clear Custom'; $clearCustomBtn.Width=96
+    foreach($c in @($analyzeBtn,$clearCustomBtn)){[void]$analysisRow.Controls.Add($c)}
+    $mapHdr=New-Object System.Windows.Forms.Label; $mapHdr.Text='Recolor Mapping (source -> target)'; $mapHdr.AutoSize=$true; $mapHdr.ForeColor=[System.Drawing.SystemColors]::ControlText
+    $mapInfo=New-Object System.Windows.Forms.Label; $mapInfo.Text='Select source in Default Palette, then click target in Custom Palette.'; $mapInfo.AutoSize=$true; $mapInfo.ForeColor=[System.Drawing.SystemColors]::ControlText; $mapInfo.MaximumSize=New-Object System.Drawing.Size(520,0)
+    $mapList=New-Object System.Windows.Forms.ListBox; $mapList.Height=110; $mapList.Dock='Top'
+    $mapRow=New-Object System.Windows.Forms.FlowLayoutPanel; $mapRow.AutoSize=$true; $mapRow.WrapContents=$false; $mapRow.Dock='Top'
+    $deriveMapBtn=New-Object System.Windows.Forms.Button; $deriveMapBtn.Text='Derive Map from Frame'; $deriveMapBtn.Width=138
+    $applyMapBtn=New-Object System.Windows.Forms.Button; $applyMapBtn.Text='Apply Map to Strip'; $applyMapBtn.Width=120
+    $clearMapBtn=New-Object System.Windows.Forms.Button; $clearMapBtn.Text='Clear Map'; $clearMapBtn.Width=80
+    foreach($c in @($deriveMapBtn,$applyMapBtn,$clearMapBtn)){[void]$mapRow.Controls.Add($c)}
+    foreach($c in @($drawLabel,$drawSwatch,$hexRow,$defaultHdr,$defaultFlow,$customHdr,$customFlow,$analysisRow,$mapHdr,$mapInfo,$mapList,$mapRow)){[void]$pl.Controls.Add($c)}
+    [void]$paletteHost.Controls.Add($pl)
+
+    $canvasHost=New-Object System.Windows.Forms.Panel; $canvasHost.Dock='Fill'; $canvasHost.AutoScroll=$false; $canvasHost.BackColor=[System.Drawing.Color]::FromArgb(30,30,30)
+    $canvas=New-Object System.Windows.Forms.PictureBox; $canvas.SizeMode='Normal'; $canvas.BackColor=[System.Drawing.Color]::FromArgb(22,22,22); $canvas.Cursor=[System.Windows.Forms.Cursors]::Cross
+    [void]$canvasHost.Controls.Add($canvas)
+    [void]$split.Panel1.Controls.Add($paletteHost); [void]$split.Panel2.Controls.Add($canvasHost)
+    [void]$integratedEditorHost.Controls.Add($split); [void]$integratedEditorHost.Controls.Add($top); $top.BringToFront()
+    $applyEditorSplit = {
+      $want = [Math]::Max(380, [Math]::Min(620, [int]($integratedEditorHost.ClientSize.Width * 0.42)))
+      $maxAllowed = [Math]::Max($split.Panel1MinSize, $split.Width - 180)
+      if ($maxAllowed -gt $split.Panel1MinSize) {
+        $split.SplitterDistance = [Math]::Min($want, $maxAllowed)
+      } else {
+        $split.SplitterDistance = $split.Panel1MinSize
+      }
+    }.GetNewClosure()
+    $integratedEditorHost.Add_Resize({ $applyEditorSplit.Invoke() }.GetNewClosure())
+    $splitReadyTimer = New-Object System.Windows.Forms.Timer
+    $splitReadyTimer.Interval = 220
+    $splitReadyTimer.Add_Tick({
+      $splitReadyTimer.Stop()
+      $splitReadyTimer.Dispose()
+      $applyEditorSplit.Invoke()
+    }.GetNewClosure())
+    $splitReadyTimer.Start()
+
+    $editorState=[pscustomobject]@{ DrawColor=[System.Drawing.Color]::FromArgb(255,$script:lastDrawColor.R,$script:lastDrawColor.G,$script:lastDrawColor.B); HoverPx=-1; HoverPy=-1 }
+    $pickColor.BackColor=$editorState.DrawColor; $drawSwatch.BackColor=$editorState.DrawColor
+    $mouseDown=$false; $dispBmp=$null; $lastRenderZoom=[int]$zoomPick.Value; $syncingZoom=$false; $lastPaintMsg=''
+    $selectedSourceArgb=$null; $defaultPalette=New-Object 'System.Collections.Generic.List[int]'; $customPaletteLocal=New-Object 'System.Collections.Generic.List[int]'; $colorMap=@{}
+
+    $colorToHex={ param([System.Drawing.Color]$c) ('#{0:X2}{1:X2}{2:X2}' -f $c.R,$c.G,$c.B) }.GetNewClosure()
+    $setDrawColor={ param([System.Drawing.Color]$c,[bool]$remember) $editorState.DrawColor=[System.Drawing.Color]::FromArgb(255,$c.R,$c.G,$c.B); $pickColor.BackColor=$editorState.DrawColor; $drawSwatch.BackColor=$editorState.DrawColor; $hexBox.Text=$colorToHex.Invoke($editorState.DrawColor); $script:lastDrawColor=$editorState.DrawColor; if($remember){Update-CustomPalette -colorToAdd $editorState.DrawColor -savedRoot $libRootText.Text -savedExe $libExeText.Text} }.GetNewClosure()
+    $refreshMapList={ $mapList.Items.Clear(); foreach($k in @($colorMap.Keys | Sort-Object)){ [void]$mapList.Items.Add(("{0} -> {1}" -f $colorToHex.Invoke([System.Drawing.Color]::FromArgb([int]$k)),$colorToHex.Invoke([System.Drawing.Color]::FromArgb([int]$colorMap[$k])))) }; if($null -ne $selectedSourceArgb){$mapInfo.Text='Selected source: '+$colorToHex.Invoke([System.Drawing.Color]::FromArgb([int]$selectedSourceArgb))} else {$mapInfo.Text='Select source in Default Palette, then click target in Custom Palette.'} }.GetNewClosure()
+    $addCustomColorLocal={ param([System.Drawing.Color]$c) $argb=[int]([System.Drawing.Color]::FromArgb(255,$c.R,$c.G,$c.B).ToArgb()); if($customPaletteLocal.Contains($argb)){return}; $customPaletteLocal.Insert(0,$argb); while($customPaletteLocal.Count -gt 24){$customPaletteLocal.RemoveAt($customPaletteLocal.Count-1)}; Update-CustomPalette -colorToAdd $c -savedRoot $libRootText.Text -savedExe $libExeText.Text }.GetNewClosure()
+    $renderCustomPalette={ foreach($ctl in @($customFlow.Controls)){$ctl.Dispose()}; $customFlow.Controls.Clear(); foreach($argb in $customPaletteLocal){ $btn=New-Object System.Windows.Forms.Button; $btn.Width=22; $btn.Height=22; $btn.Margin=New-Object System.Windows.Forms.Padding(2); $btn.FlatStyle='Flat'; $btn.FlatAppearance.BorderColor=[System.Drawing.Color]::Black; $btn.FlatAppearance.BorderSize=1; $btn.BackColor=[System.Drawing.Color]::FromArgb([int]$argb); $btn.Tag=[int]$argb; $btn.Add_Click({ $target=[System.Drawing.Color]::FromArgb([int]$this.Tag); $setDrawColor.Invoke($target,$true); if($null -ne $selectedSourceArgb){$colorMap[[int]$selectedSourceArgb]=[int]$this.Tag; $refreshMapList.Invoke()} }.GetNewClosure()); [void]$customFlow.Controls.Add($btn) } }.GetNewClosure()
+    $renderDefaultPalette={ foreach($ctl in @($defaultFlow.Controls)){$ctl.Dispose()}; $defaultFlow.Controls.Clear(); foreach($argb in $defaultPalette){ $btn=New-Object System.Windows.Forms.Button; $btn.Width=22; $btn.Height=22; $btn.Margin=New-Object System.Windows.Forms.Padding(2); $btn.FlatStyle='Flat'; $btn.FlatAppearance.BorderColor=[System.Drawing.Color]::Black; $btn.FlatAppearance.BorderSize=1; $btn.BackColor=[System.Drawing.Color]::FromArgb([int]$argb); $btn.Tag=[int]$argb; $btn.Add_Click({ $selectedSourceArgb=[int]$this.Tag; $setDrawColor.Invoke([System.Drawing.Color]::FromArgb([int]$this.Tag),$true); $refreshMapList.Invoke() }.GetNewClosure()); [void]$defaultFlow.Controls.Add($btn) } }.GetNewClosure()
+    $analyzePalette={ $counts=@{}; $maxY=[int]($editFrameCount*[int]$spec.FrameH); for($y=0;$y -lt $maxY;$y++){ for($x=0;$x -lt [int]$spec.FrameW;$x++){ $px=$srcBmp.GetPixel($x,$y); if($px.A -le 0){continue}; $argb=[int]([System.Drawing.Color]::FromArgb(255,$px.R,$px.G,$px.B).ToArgb()); if($counts.ContainsKey($argb)){$counts[$argb]=[int]$counts[$argb]+1}else{$counts[$argb]=1} } }; $defaultPalette.Clear(); foreach($k in @($counts.Keys | Sort-Object -Descending -Property @{Expression={ $counts[$_] }}, @{Expression={$_}})){ [void]$defaultPalette.Add([int]$k); if($defaultPalette.Count -ge 24){break} }; $renderDefaultPalette.Invoke(); $status.Text="Palette analyzed: $($defaultPalette.Count) colors from $editFrameCount frame(s)." }.GetNewClosure()
+    foreach($ole in (Normalize-CustomPalette16 -inputColors $script:customPalette)){ try{ $c=[System.Drawing.ColorTranslator]::FromOle([int]$ole); $argb=[int]([System.Drawing.Color]::FromArgb(255,$c.R,$c.G,$c.B).ToArgb()); if(-not $customPaletteLocal.Contains($argb)){[void]$customPaletteLocal.Add($argb)} } catch{} }
+
+    $render={
+      if($null -ne $dispBmp){$dispBmp.Dispose();$dispBmp=$null}; $zoom=[int]$zoomPick.Value; $w=[int]$spec.FrameW; $h=[int]$spec.FrameH; $frame=[int]$framePick.Value
+      if($fitCheck.Checked){ $availW=[Math]::Max($canvasHost.ClientSize.Width-40,1); $availH=[Math]::Max($canvasHost.ClientSize.Height-40,1); $zw=[Math]::Floor($availW/$w); $zh=[Math]::Floor($availH/$h); $autoZoom=[Math]::Max(1,[Math]::Min($zw,$zh)); $zoom=[int][Math]::Max([int]$zoomPick.Minimum,[Math]::Min([int]$zoomPick.Maximum,$autoZoom)); if([int]$zoomPick.Value -ne $zoom){$syncingZoom=$true;$zoomPick.Value=$zoom;$syncingZoom=$false} }
+      $dispBmp=New-Object System.Drawing.Bitmap(($w*$zoom),($h*$zoom)); $g=[System.Drawing.Graphics]::FromImage($dispBmp)
+      try{
+        $g.InterpolationMode='NearestNeighbor'; $g.PixelOffsetMode='HighQuality'; $g.SmoothingMode='None'; $g.Clear([System.Drawing.Color]::FromArgb(18,18,18))
+        $checkA=[System.Drawing.Color]::FromArgb(40,40,40); $checkB=[System.Drawing.Color]::FromArgb(55,55,55)
+        for($py=0;$py -lt $h;$py++){ for($px=0;$px -lt $w;$px++){ $c=if((($px+$py)%2)-eq 0){$checkA}else{$checkB}; $br=New-Object System.Drawing.SolidBrush($c); try{$g.FillRectangle($br,$px*$zoom,$py*$zoom,$zoom,$zoom)} finally{$br.Dispose()} } }
+        for($py=0;$py -lt $h;$py++){ for($px=0;$px -lt $w;$px++){ $src=$srcBmp.GetPixel($px,$py+($frame*$h)); if($src.A -gt 0){ $br2=New-Object System.Drawing.SolidBrush($src); try{$g.FillRectangle($br2,$px*$zoom,$py*$zoom,$zoom,$zoom)} finally{$br2.Dispose()} } } }
+        $pen=New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(45,255,255,255)); try{ for($x=0;$x -le $w;$x++){ $g.DrawLine($pen,$x*$zoom,0,$x*$zoom,$h*$zoom) }; for($y=0;$y -le $h;$y++){ $g.DrawLine($pen,0,$y*$zoom,$w*$zoom,$y*$zoom) } } finally{$pen.Dispose()}
+        $border=New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(180,120,180,255),2); try{$g.DrawRectangle($border,0,0,($w*$zoom)-1,($h*$zoom)-1)} finally{$border.Dispose()}
+        if($editorState.HoverPx -ge 0 -and $editorState.HoverPx -lt $w -and $editorState.HoverPy -ge 0 -and $editorState.HoverPy -lt $h){ $hoverPen=New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(220,255,224,0),2); try{$g.DrawRectangle($hoverPen,($editorState.HoverPx*$zoom),($editorState.HoverPy*$zoom),$zoom-1,$zoom-1)} finally{$hoverPen.Dispose()} }
+      } finally {$g.Dispose()}
+      if($null -ne $canvas.Image){$canvas.Image.Dispose()}; $canvas.Image=$dispBmp; $canvas.Width=$dispBmp.Width; $canvas.Height=$dispBmp.Height; $canvas.Left=[Math]::Max(8,[int](($canvasHost.ClientSize.Width-$canvas.Width)/2)); $canvas.Top=[Math]::Max(8,[int](($canvasHost.ClientSize.Height-$canvas.Height)/2)); $lastRenderZoom=$zoom
+      $frameInfo.Text=("{0}/{1}" -f $frame,[Math]::Max($editFrameCount-1,0)); $status.Text="Editing $workingPath | frame=$frame zoom=$zoom | hover=($($editorState.HoverPx),$($editorState.HoverPy)) | tools: paint/fill/pick/eraser $lastPaintMsg"
+    }.GetNewClosure()
+
+    $toCanvasPoint={ param([int]$mx,[int]$my,[bool]$fromHost) if($fromHost){ [pscustomobject]@{X=($mx-$canvas.Left);Y=($my-$canvas.Top)} } else { [pscustomobject]@{X=$mx;Y=$my} } }.GetNewClosure()
+    $applyAt={
+      param([int]$mx,[int]$my,[bool]$fromHost)
+      $pt=$toCanvasPoint.Invoke($mx,$my,$fromHost); $cx=[int]$pt.X; $cy=[int]$pt.Y; if($cx -lt 0 -or $cy -lt 0 -or $cx -ge $canvas.Width -or $cy -ge $canvas.Height){return}
+      $zoom=[int]$lastRenderZoom; $px=[int][Math]::Floor(($cx)/$zoom); $py=[int][Math]::Floor(($cy)/$zoom); if($px -lt 0 -or $px -ge $spec.FrameW -or $py -lt 0 -or $py -ge $spec.FrameH){return}
+      try{
+        $ay=$py+([int]$framePick.Value*[int]$spec.FrameH)
+        if($eyeDropper.Checked){ $picked=$srcBmp.GetPixel($px,$ay); if($picked.A -eq 0){$eraser.Checked=$true}else{$eraser.Checked=$false; $setDrawColor.Invoke([System.Drawing.Color]::FromArgb(255,$picked.R,$picked.G,$picked.B),$true); $addCustomColorLocal.Invoke($editorState.DrawColor); $renderCustomPalette.Invoke()}; $lastPaintMsg=("| pick x={0} y={1}" -f $px,$py) }
+        elseif($fillTool.Checked){
+          $fillTarget=$srcBmp.GetPixel($px,$ay); $fillReplace=if($eraser.Checked){[System.Drawing.Color]::FromArgb(0,0,0,0)}else{$editorState.DrawColor}
+          if($fillTarget.ToArgb() -ne $fillReplace.ToArgb()){ $w=[int]$spec.FrameW; $h=[int]$spec.FrameH; $baseY=[int]$framePick.Value*[int]$spec.FrameH; $q=New-Object 'System.Collections.Generic.Queue[System.Drawing.Point]'; $seen=New-Object 'System.Collections.Generic.HashSet[int]'; $q.Enqueue([System.Drawing.Point]::new($px,$py)); while($q.Count -gt 0){ $pt2=$q.Dequeue(); $x2=[int]$pt2.X; $y2=[int]$pt2.Y; if($x2 -lt 0 -or $x2 -ge $w -or $y2 -lt 0 -or $y2 -ge $h){continue}; $k=$y2*$w+$x2; if(-not $seen.Add($k)){continue}; $yy=$baseY+$y2; $cur=$srcBmp.GetPixel($x2,$yy); if($cur.ToArgb() -ne $fillTarget.ToArgb()){continue}; $srcBmp.SetPixel($x2,$yy,$fillReplace); $q.Enqueue([System.Drawing.Point]::new($x2-1,$y2)); $q.Enqueue([System.Drawing.Point]::new($x2+1,$y2)); $q.Enqueue([System.Drawing.Point]::new($x2,$y2-1)); $q.Enqueue([System.Drawing.Point]::new($x2,$y2+1)) } }
+          $lastPaintMsg=("| fill x={0} y={1}" -f $px,$py)
+        } elseif($eraser.Checked){ $srcBmp.SetPixel($px,$ay,[System.Drawing.Color]::FromArgb(0,0,0,0)); $lastPaintMsg=("| erase x={0} y={1}" -f $px,$py) }
+        else { $srcBmp.SetPixel($px,$ay,$editorState.DrawColor); $lastPaintMsg=("| paint x={0} y={1}" -f $px,$py) }
+      } catch { $status.Text="Edit failed: $($_.Exception.Message)"; return }
+      $render.Invoke()
+    }.GetNewClosure()
+    $updateHover={ param([int]$mx,[int]$my,[bool]$fromHost) $pt=$toCanvasPoint.Invoke($mx,$my,$fromHost); $cx=[int]$pt.X; $cy=[int]$pt.Y; $newPx=-1; $newPy=-1; if($cx -ge 0 -and $cy -ge 0 -and $cx -lt $canvas.Width -and $cy -lt $canvas.Height){ $zoom=[int]$lastRenderZoom; $newPx=[int][Math]::Floor(($cx)/$zoom); $newPy=[int][Math]::Floor(($cy)/$zoom); if($newPx -lt 0 -or $newPx -ge $spec.FrameW -or $newPy -lt 0 -or $newPy -ge $spec.FrameH){$newPx=-1;$newPy=-1} }; if($newPx -ne $editorState.HoverPx -or $newPy -ne $editorState.HoverPy){$editorState.HoverPx=$newPx;$editorState.HoverPy=$newPy;$render.Invoke()} }.GetNewClosure()
+    $hexParse={ param([string]$txt) $v=$txt.Trim(); if($v.StartsWith('#')){$v=$v.Substring(1)}; if($v.Length -ne 6 -or $v -notmatch '^[0-9A-Fa-f]{6}$'){return $null}; $r=[Convert]::ToInt32($v.Substring(0,2),16); $g=[Convert]::ToInt32($v.Substring(2,2),16); $b=[Convert]::ToInt32($v.Substring(4,2),16); [System.Drawing.Color]::FromArgb(255,$r,$g,$b) }.GetNewClosure()
+
+    $deriveMapBtn.Add_Click({ $colorMap.Clear(); $frame=[int]$framePick.Value; $w=[int]$spec.FrameW; $h=[int]$spec.FrameH; $baseY=$frame*[int]$spec.FrameH; $pairs=@{}; for($y=0;$y -lt $h;$y++){ for($x=0;$x -lt $w;$x++){ $s=$origBmp.GetPixel($x,$baseY+$y); $d=$srcBmp.GetPixel($x,$baseY+$y); if($s.A -le 0 -or $d.A -le 0){continue}; $sk=[int]([System.Drawing.Color]::FromArgb(255,$s.R,$s.G,$s.B).ToArgb()); $dk=[int]([System.Drawing.Color]::FromArgb(255,$d.R,$d.G,$d.B).ToArgb()); $pk=("{0}|{1}" -f $sk,$dk); if($pairs.ContainsKey($pk)){$pairs[$pk]=[int]$pairs[$pk]+1}else{$pairs[$pk]=1} } }; $bySource=@{}; foreach($pk in $pairs.Keys){ $parts=$pk.Split('|'); $sk=[int]$parts[0]; $dk=[int]$parts[1]; if(-not $bySource.ContainsKey($sk)){$bySource[$sk]=@{}}; $bySource[$sk][$dk]=[int]$pairs[$pk] }; foreach($sk in $bySource.Keys){ $bestDk=$null; $bestCt=-1; foreach($dk in $bySource[$sk].Keys){ $ct=[int]$bySource[$sk][$dk]; if($ct -gt $bestCt){$bestCt=$ct;$bestDk=[int]$dk} }; if($null -ne $bestDk){$colorMap[[int]$sk]=[int]$bestDk} }; $refreshMapList.Invoke(); $status.Text="Derived map from frame ${frame}: $($colorMap.Count) entries." }.GetNewClosure())
+    $applyMapBtn.Add_Click({ if($colorMap.Count -eq 0){$status.Text='No map entries to apply.';return}; $changed=0; $maxY=[int]($editFrameCount*[int]$spec.FrameH); for($y=0;$y -lt $maxY;$y++){ for($x=0;$x -lt [int]$spec.FrameW;$x++){ $p=$srcBmp.GetPixel($x,$y); if($p.A -le 0){continue}; $sk=[int]([System.Drawing.Color]::FromArgb(255,$p.R,$p.G,$p.B).ToArgb()); if(-not $colorMap.ContainsKey($sk)){continue}; $dst=[System.Drawing.Color]::FromArgb([int]$colorMap[$sk]); $srcBmp.SetPixel($x,$y,[System.Drawing.Color]::FromArgb($p.A,$dst.R,$dst.G,$dst.B)); $changed++ } }; $render.Invoke(); $status.Text="Applied map across strip. Pixels changed: $changed" }.GetNewClosure())
+    $clearMapBtn.Add_Click({ $colorMap.Clear(); $selectedSourceArgb=$null; $refreshMapList.Invoke(); $status.Text='Color map cleared.' }.GetNewClosure())
+    $analyzeBtn.Add_Click({ $analyzePalette.Invoke() }.GetNewClosure())
+    $clearCustomBtn.Add_Click({ $customPaletteLocal.Clear(); $renderCustomPalette.Invoke(); $status.Text='Custom palette cleared (session view).' }.GetNewClosure())
+    $hexSetBtn.Add_Click({ $c=$hexParse.Invoke($hexBox.Text); if($null -eq $c){$status.Text='Invalid hex. Use #RRGGBB.'; return}; $setDrawColor.Invoke($c,$false) }.GetNewClosure())
+    $hexAddBtn.Add_Click({ $c=$hexParse.Invoke($hexBox.Text); if($null -eq $c){$status.Text='Invalid hex. Use #RRGGBB.'; return}; $setDrawColor.Invoke($c,$true); $addCustomColorLocal.Invoke($c); $renderCustomPalette.Invoke() }.GetNewClosure())
+    $pickColor.Add_Click({ $setDrawColor.Invoke($editorState.DrawColor,$true); $addCustomColorLocal.Invoke($editorState.DrawColor); $renderCustomPalette.Invoke(); $status.Text='Draw color pinned into Custom Palette.' }.GetNewClosure())
+    $eyeDropper.Add_CheckedChanged({ if($eyeDropper.Checked){$fillTool.Checked=$false;$eraser.Checked=$false} }.GetNewClosure())
+    $fillTool.Add_CheckedChanged({ if($fillTool.Checked){$eyeDropper.Checked=$false} }.GetNewClosure())
+    $eraser.Add_CheckedChanged({ if($eraser.Checked){$eyeDropper.Checked=$false} }.GetNewClosure())
+    $canvas.Add_MouseDown({ param($s,$e) if($e.Button -ne [System.Windows.Forms.MouseButtons]::Left){return}; $mouseDown=$true; $canvas.Capture=$true; $applyAt.Invoke($e.X,$e.Y,$false); if($eyeDropper.Checked -or $fillTool.Checked){$mouseDown=$false;$canvas.Capture=$false} }.GetNewClosure())
+    $canvas.Add_MouseMove({ param($s,$e) $updateHover.Invoke($e.X,$e.Y,$false); if($mouseDown){$applyAt.Invoke($e.X,$e.Y,$false)} }.GetNewClosure())
+    $canvas.Add_MouseUp({ $mouseDown=$false; $canvas.Capture=$false }.GetNewClosure())
+    $canvas.Add_MouseLeave({ $editorState.HoverPx=-1; $editorState.HoverPy=-1; $render.Invoke() }.GetNewClosure())
+    $framePick.Add_ValueChanged({ $render.Invoke() }.GetNewClosure())
+    $zoomPick.Add_ValueChanged({ if(-not $syncingZoom -and $fitCheck.Checked){$fitCheck.Checked=$false}else{$render.Invoke()} }.GetNewClosure())
+    $fitCheck.Add_CheckedChanged({ $render.Invoke() }.GetNewClosure())
+    $canvasHost.Add_Resize({ $render.Invoke() }.GetNewClosure())
+    $prevFrameBtn.Add_Click({ if($framePick.Value -gt $framePick.Minimum){$framePick.Value=$framePick.Value-1}else{$framePick.Value=$framePick.Maximum} }.GetNewClosure())
+    $nextFrameBtn.Add_Click({ if($framePick.Value -lt $framePick.Maximum){$framePick.Value=$framePick.Value+1}else{$framePick.Value=$framePick.Minimum} }.GetNewClosure())
+    $zoomOutBtn.Add_Click({ $fitCheck.Checked=$false; if($zoomPick.Value -gt $zoomPick.Minimum){$zoomPick.Value=$zoomPick.Value-1} }.GetNewClosure())
+    $zoomInBtn.Add_Click({ $fitCheck.Checked=$false; if($zoomPick.Value -lt $zoomPick.Maximum){$zoomPick.Value=$zoomPick.Value+1} }.GetNewClosure())
+    $saveBtn.Add_Click({ try{$srcBmp.Save($workingPath,[System.Drawing.Imaging.ImageFormat]::Png);$status.Text="Saved: $workingPath";Render-Selection}catch{[void][System.Windows.Forms.MessageBox]::Show($form,"Save failed:`n$($_.Exception.Message)","Integrated Editor",[System.Windows.Forms.MessageBoxButtons]::OK,[System.Windows.Forms.MessageBoxIcon]::Error)} }.GetNewClosure())
+    $backBtn.Add_Click({ if($null -ne $canvas.Image){$canvas.Image.Dispose();$canvas.Image=$null}; if($null -ne $srcBmp){$srcBmp.Dispose()}; if($null -ne $origBmp){$origBmp.Dispose()}; $integratedEditorHost.Visible=$false; $editorHelp.Visible=$true; $autoPlay.Checked=$prevAutoPlay; Render-Selection }.GetNewClosure())
+
+    $applyEditorSplit.Invoke(); $setDrawColor.Invoke($editorState.DrawColor,$false); $renderCustomPalette.Invoke(); $analyzePalette.Invoke(); $refreshMapList.Invoke(); $render.Invoke(); Start-Sleep -Milliseconds 40; $render.Invoke(); if($seededFromReference){Render-Selection}
+  } finally { $integratedEditorHost.ResumeLayout() }
+}
+function Ensure-LibreSpriteSource {
+  param([string]$rootPath)
+  $targetRoot = [System.IO.Path]::GetFullPath($rootPath)
+  $parentDir = Split-Path -Parent $targetRoot
+  if ([string]::IsNullOrWhiteSpace($parentDir)) { return $false }
+  Ensure-Directory $parentDir
+  try {
+    if (-not (Test-Path (Join-Path $targetRoot ".git") -PathType Container)) {
+      git clone https://github.com/LibreSprite/LibreSprite.git $targetRoot | Out-Null
+    } else {
+      git -C $targetRoot pull --ff-only | Out-Null
+    }
+    return $true
+  } catch {
+    return $false
+  }
+}
+
+function Try-Build-LibreSpriteExe {
+  param([string]$rootPath)
+  if ([string]::IsNullOrWhiteSpace($rootPath) -or -not (Test-Path (Join-Path $rootPath "CMakeLists.txt") -PathType Leaf)) {
+    return ""
+  }
+  try {
+    cmake --version | Out-Null
+    if ($LASTEXITCODE -ne 0) { return "" }
+  } catch {
+    return ""
+  }
+
+  $buildDir = Join-Path $rootPath "build"
+  Ensure-Directory $buildDir
+
+  $hasNinja = $false
+  try {
+    ninja --version | Out-Null
+    $hasNinja = ($LASTEXITCODE -eq 0)
+  } catch {
+    $hasNinja = $false
+  }
+
+  try {
+    if ($hasNinja) {
+      cmake -S $rootPath -B $buildDir -G Ninja
+    } else {
+      cmake -S $rootPath -B $buildDir
+    }
+    if ($LASTEXITCODE -ne 0) { return "" }
+
+    cmake --build $buildDir --config Release
+    if ($LASTEXITCODE -ne 0) { return "" }
+  } catch {
+    return ""
+  }
+
+  return Find-LibreSpriteExeAuto -rootPath $rootPath
+}
+
+function Try-Download-LibreSpritePortable {
+  param([string]$rootPath)
+  try {
+    $downloadRoot = Join-Path $rootPath "prebuilt"
+    $extractRoot = Join-Path $downloadRoot "latest"
+    Ensure-Directory $downloadRoot
+    if (Test-Path $extractRoot -PathType Container) {
+      Remove-Item -Path $extractRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    Ensure-Directory $extractRoot
+
+    $api = "https://api.github.com/repos/LibreSprite/LibreSprite/releases/latest"
+    $release = Invoke-RestMethod -Uri $api -UseBasicParsing
+    if ($null -eq $release -or $null -eq $release.assets) { return "" }
+
+    $asset = $null
+    foreach ($a in $release.assets) {
+      if ($a.name -match '(?i)(win|windows).*\.zip$' -and $a.browser_download_url -match '^https?://') {
+        $asset = $a
+        break
+      }
+    }
+    if ($null -eq $asset) { return "" }
+
+    $zipPath = Join-Path $downloadRoot $asset.name
+    Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $zipPath -UseBasicParsing
+    Expand-Archive -Path $zipPath -DestinationPath $extractRoot -Force
+    $exeList = @(Get-ChildItem -Path $extractRoot -Recurse -Filter "libresprite.exe" -File -ErrorAction SilentlyContinue)
+    if ($exeList.Count -eq 0) { return "" }
+    $bestExe = $null
+    foreach ($e in $exeList) {
+      if ($null -eq $bestExe -or $e.LastWriteTime -gt $bestExe.LastWriteTime) { $bestExe = $e }
+    }
+    if ($null -eq $bestExe) { return "" }
+    return [System.IO.Path]::GetFullPath($bestExe.FullName)
+  } catch {
+    return ""
+  }
+}
+
+function Update-LibreSpriteStatus {
+  $root = $libRootText.Text
+  $exe = $libExeText.Text
+  $srcOk = Test-Path (Join-Path $root ".git") -PathType Container
+  $exeOk = $false
+  if (-not [string]::IsNullOrWhiteSpace($exe)) {
+    $exeOk = (Test-Path $exe -PathType Leaf)
+  }
+  $editorStatus.Text = "Status: source=$srcOk | exe=$exeOk | settings=$settingsPath"
+  if ($exeOk) {
+    Save-PreviewSettings -savedRoot $root -savedExe $exe
+  }
+}
+
+function Set-EditorStatus {
+  param([string]$message, [bool]$busy = $false)
+  $editorStatus.Text = ("Status: {0}" -f $message)
+  $form.UseWaitCursor = $busy
+  $integratedEditButton.Enabled = (-not $busy)
+  $editAssetButton.Enabled = (-not $busy)
+  $form.Refresh()
+  [System.Windows.Forms.Application]::DoEvents()
+}
+
+function Ensure-LibreSpriteExeAvailable {
+  Set-EditorStatus -message "Finding LibreSprite EXE..." -busy $true
+  $exe = $libExeText.Text
+  $ok = (-not [string]::IsNullOrWhiteSpace($exe)) -and (Test-Path $exe -PathType Leaf)
+  if ($ok) {
+    Save-PreviewSettings -savedRoot $libRootText.Text -savedExe $exe
+    Set-EditorStatus -message "Found existing LibreSprite EXE." -busy $false
+    return $exe
+  }
+
+  Set-EditorStatus -message "Checking known build paths..." -busy $true
+  $exe = Resolve-LibreSpriteExe -rootPath $libRootText.Text -explicitExe $exe
+  if (-not [string]::IsNullOrWhiteSpace($exe) -and (Test-Path $exe -PathType Leaf)) {
+    $libExeText.Text = $exe
+    Save-PreviewSettings -savedRoot $libRootText.Text -savedExe $exe
+    Set-EditorStatus -message "Found LibreSprite EXE in build paths." -busy $false
+    return $exe
+  }
+
+  Set-EditorStatus -message "Searching filesystem for libresprite.exe..." -busy $true
+  $exe = Find-LibreSpriteExeAuto -rootPath $libRootText.Text
+  if (-not [string]::IsNullOrWhiteSpace($exe) -and (Test-Path $exe -PathType Leaf)) {
+    $libExeText.Text = $exe
+    Save-PreviewSettings -savedRoot $libRootText.Text -savedExe $exe
+    Set-EditorStatus -message "Found LibreSprite EXE by search." -busy $false
+    return $exe
+  }
+
+  Set-EditorStatus -message "No EXE found. Bootstrapping source/build..." -busy $true
+  if (-not (Test-Path (Join-Path $libRootText.Text ".git") -PathType Container)) {
+    Set-EditorStatus -message "Cloning/updating LibreSprite source..." -busy $true
+    [void](Ensure-LibreSpriteSource -rootPath $libRootText.Text)
+  }
+  Set-EditorStatus -message "Re-checking for EXE after source setup..." -busy $true
+  $exe = Find-LibreSpriteExeAuto -rootPath $libRootText.Text
+  if ([string]::IsNullOrWhiteSpace($exe)) {
+    Set-EditorStatus -message "Building LibreSprite (this can take a while)..." -busy $true
+    $exe = Try-Build-LibreSpriteExe -rootPath $libRootText.Text
+  }
+  if (-not [string]::IsNullOrWhiteSpace($exe) -and (Test-Path $exe -PathType Leaf)) {
+    $libExeText.Text = $exe
+    Save-PreviewSettings -savedRoot $libRootText.Text -savedExe $exe
+    Set-EditorStatus -message "LibreSprite EXE is ready." -busy $false
+    return $exe
+  }
+
+  Set-EditorStatus -message "Build EXE not found. Downloading portable release..." -busy $true
+  $exe = Try-Download-LibreSpritePortable -rootPath $libRootText.Text
+  if (-not [string]::IsNullOrWhiteSpace($exe) -and (Test-Path $exe -PathType Leaf)) {
+    $libExeText.Text = $exe
+    Save-PreviewSettings -savedRoot $libRootText.Text -savedExe $exe
+    Set-EditorStatus -message "Downloaded LibreSprite and found EXE." -busy $false
+    return $exe
+  }
+
+  Set-EditorStatus -message "Could not auto-locate/build/download LibreSprite EXE. Use Editor > Advanced." -busy $false
+  return ""
+}
+
+function Ensure-SelectedAssetForEditing {
+  if ($assetList.SelectedIndex -lt 0) { return $null }
+  $spec = $assetSpecs[$assetList.SelectedIndex]
+  if ($null -eq $spec) { return $null }
+
+  $assetPath = Join-Path $overrideText.Text $spec.RelPath
+  if (-not (Test-Path $assetPath -PathType Leaf)) {
+    $refCandidate = Join-Path $referenceText.Text $spec.RelPath
+    if (Test-Path $refCandidate -PathType Leaf) {
+      Ensure-Directory (Split-Path -Parent $assetPath)
+      Copy-Item $refCandidate $assetPath -Force
+    }
+  }
+  if (-not (Test-Path $assetPath -PathType Leaf)) {
+    return $null
+  }
+  return [pscustomobject]@{
+    Path = $assetPath
+    Spec = $spec
+  }
+}
+
+function Stop-EmbeddedLibreSprite {
+  if ($null -ne $script:embeddedLibreProc) {
+    try {
+      if (-not $script:embeddedLibreProc.HasExited) {
+        $script:embeddedLibreProc.CloseMainWindow() | Out-Null
+        Start-Sleep -Milliseconds 180
+      }
+      if (-not $script:embeddedLibreProc.HasExited) {
+        $script:embeddedLibreProc.Kill()
+      }
+    } catch {}
+  }
+  $script:embeddedLibreProc = $null
+  $script:embeddedLibreHwnd = [IntPtr]::Zero
+  $script:embeddedAssetPath = ""
+  $script:embeddedAssetWriteUtc = [datetime]::MinValue
+}
+
+function Resize-EmbeddedLibreSprite {
+  if ($script:embeddedLibreHwnd -eq [IntPtr]::Zero) { return }
+  $w = [Math]::Max(1, $advancedEditorHost.ClientSize.Width)
+  $h = [Math]::Max(1, $advancedEditorHost.ClientSize.Height)
+  [void][NativeWin]::MoveWindow($script:embeddedLibreHwnd, 0, 0, $w, $h, $true)
+}
+
+function Start-EmbeddedLibreSprite {
+  param([string]$exePath, [string]$assetPath)
+  Stop-EmbeddedLibreSprite
+  $advancedEditorHost.Visible = $true
+  foreach ($ctl in @($advancedEditorHost.Controls)) { $ctl.Dispose() }
+  $advancedEditorHost.Controls.Clear()
+
+  $proc = $null
+  try {
+    $proc = Start-Process -FilePath $exePath -ArgumentList ('"{0}"' -f $assetPath) -WorkingDirectory (Split-Path -Parent $exePath) -PassThru
+  } catch {
+    [void][System.Windows.Forms.MessageBox]::Show($form, "Failed to launch LibreSprite:`n$($_.Exception.Message)", "LibreSprite", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+    return $false
+  }
+  if ($null -eq $proc) { return $false }
+
+  $hwnd = [IntPtr]::Zero
+  for ($i = 0; $i -lt 80; $i++) {
+    Start-Sleep -Milliseconds 125
+    try { $proc.Refresh() } catch {}
+    if ($proc.HasExited) { break }
+    if ($proc.MainWindowHandle -ne [IntPtr]::Zero) {
+      $hwnd = $proc.MainWindowHandle
+      break
+    }
+  }
+  if ($hwnd -eq [IntPtr]::Zero) {
+    $editorStatus.Text = "Status: LibreSprite launched externally (window handle not detected for embed)."
+    return $true
+  }
+
+  $GWL_STYLE = -16
+  $WS_CHILD = 0x40000000
+  $WS_VISIBLE = 0x10000000
+  $WS_CAPTION = 0x00C00000
+  $WS_THICKFRAME = 0x00040000
+  $WS_MINIMIZEBOX = 0x00020000
+  $WS_MAXIMIZEBOX = 0x00010000
+  $WS_SYSMENU = 0x00080000
+
+  [void][NativeWin]::SetParent($hwnd, $advancedEditorHost.Handle)
+  $style = [NativeWin]::GetWindowLong($hwnd, $GWL_STYLE)
+  $style = ($style -band (-bnot ($WS_CAPTION -bor $WS_THICKFRAME -bor $WS_MINIMIZEBOX -bor $WS_MAXIMIZEBOX -bor $WS_SYSMENU))) -bor $WS_CHILD -bor $WS_VISIBLE
+  [void][NativeWin]::SetWindowLong($hwnd, $GWL_STYLE, $style)
+  [void][NativeWin]::ShowWindow($hwnd, 5)
+
+  $script:embeddedLibreProc = $proc
+  $script:embeddedLibreHwnd = $hwnd
+  $script:embeddedAssetPath = $assetPath
+  try {
+    $script:embeddedAssetWriteUtc = (Get-Item $assetPath).LastWriteTimeUtc
+  } catch {
+    $script:embeddedAssetWriteUtc = [datetime]::MinValue
+  }
+  Resize-EmbeddedLibreSprite
+  return $true
+}
+
 function Update-FramePreview {
   if ($null -eq $script:currentSpec) { return }
 
   if ($script:currentSpec.Kind -ne "strip") {
     Set-ImageBox $frameReference.Picture $null
     Set-ImageBox $frameOverride.Picture $null
-    Set-ImageBox $frameDiff.Picture $null
     $frameLabel.Text = "Frame: n/a"
     if ($null -ne $script:currentRefStrip) {
       Set-ImageBox $liveReference.Picture ([System.Drawing.Bitmap]$script:currentRefStrip.Clone())
@@ -633,11 +1580,8 @@ function Update-FramePreview {
 
   $refFrame = New-FrameBitmap -stripBmp $script:currentRefStrip -frameIndex $script:currentFrameIndex -frameW $script:currentSpec.FrameW -frameH $script:currentSpec.FrameH -frameCount $script:currentSpec.Frames
   $ovrFrame = New-FrameBitmap -stripBmp $script:currentOverrideStrip -frameIndex $script:currentFrameIndex -frameW $script:currentSpec.FrameW -frameH $script:currentSpec.FrameH -frameCount $script:currentSpec.Frames
-  $diffFrame = New-DiffBitmap -bmpA $refFrame -bmpB $ovrFrame
-
   Set-ImageBox $frameReference.Picture $refFrame
   Set-ImageBox $frameOverride.Picture $ovrFrame
-  Set-ImageBox $frameDiff.Picture $diffFrame
   $frameLabel.Text = ("Frame: {0} / {1}" -f $script:currentFrameIndex, $maxFrame)
   if ($null -ne $refFrame) {
     Set-ImageBox $liveReference.Picture ([System.Drawing.Bitmap]$refFrame.Clone())
@@ -674,7 +1618,6 @@ function Render-Selection {
 
   Set-ImageBox $stripReference.Picture $null
   Set-ImageBox $stripOverride.Picture $null
-  Set-ImageBox $stripDiff.Picture $null
 
   if ($null -ne $script:currentRefStrip) {
     Set-ImageBox $stripReference.Picture ([System.Drawing.Bitmap]$script:currentRefStrip.Clone())
@@ -682,22 +1625,30 @@ function Render-Selection {
   if ($null -ne $script:currentOverrideStrip) {
     Set-ImageBox $stripOverride.Picture ([System.Drawing.Bitmap]$script:currentOverrideStrip.Clone())
   }
-  Set-ImageBox $stripDiff.Picture (New-DiffBitmap -bmpA $script:currentRefStrip -bmpB $script:currentOverrideStrip)
 
   $refSizeOk = Test-ExpectedSize -bmp $script:currentRefStrip -expectedW $script:currentSpec.ExpectedW -expectedH $script:currentSpec.ExpectedH
   $ovrSizeOk = Test-ExpectedSize -bmp $script:currentOverrideStrip -expectedW $script:currentSpec.ExpectedW -expectedH $script:currentSpec.ExpectedH
 
   $refSizeTxt = if ($null -eq $script:currentRefStrip) { "missing" } else { "{0}x{1}" -f $script:currentRefStrip.Width, $script:currentRefStrip.Height }
   $ovrSizeTxt = if ($null -eq $script:currentOverrideStrip) { "missing" } else { "{0}x{1}" -f $script:currentOverrideStrip.Width, $script:currentOverrideStrip.Height }
+  $overrideWarning = ""
+  if ($null -eq $script:currentOverrideStrip) {
+    $overrideWarning = "WARNING: Override file missing. Save from Editor, then press F5."
+  } elseif (-not $ovrSizeOk) {
+    $overrideWarning = ("WARNING: Override size mismatch. Expected {0}x{1}, got {2}. Live Override may be blank." -f $script:currentSpec.ExpectedW, $script:currentSpec.ExpectedH, $ovrSizeTxt)
+  }
 
   $statusLabel.Text = @(
+    ("Preview Tool: {0}" -f $previewVersion),
+    ("Script: {0}" -f $MyInvocation.MyCommand.Path),
     ("Game: {0}" -f $GameRoot),
     ("Style: {0}" -f $styleCombo.SelectedItem),
     ("Selected: {0}" -f $script:currentSpec.Display),
     ("Expected: {0}x{1} ({2} frame(s), {3}x{4} each)" -f $script:currentSpec.ExpectedW, $script:currentSpec.ExpectedH, $script:currentSpec.Frames, $script:currentSpec.FrameW, $script:currentSpec.FrameH),
     ("Reference: {0} [{1}] ({2})" -f $referencePath, $refSizeTxt, ($(if ($refSizeOk) { "OK" } else { "check" }))),
     ("Override:  {0} [{1}] ({2})" -f $overridePath, $ovrSizeTxt, ($(if ($ovrSizeOk) { "OK" } else { "check" }))),
-    "Tip: set Reference Root to another ModAssets export for A/B diff; leave empty for override-only checks."
+    ($(if ([string]::IsNullOrWhiteSpace($overrideWarning)) { "Tip: set Reference Root to another ModAssets export for A/B diff; leave empty for override-only checks." } else { $overrideWarning })),
+    ("Quick action: use 'Open Current Override File' to verify the exact file path being edited.")
   ) -join [Environment]::NewLine
 
   Update-FramePreview
@@ -777,14 +1728,136 @@ $ensureBaselineButton.Add_Click({
 
 $openPackButton.Add_Click({ Open-ActivePackFolder })
 $launchGameButton.Add_Click({ Launch-GameExe })
+$openOverrideAssetButton.Add_Click({ Open-CurrentOverrideAsset })
+
+$libRootBrowse.Add_Click({
+  $picked = Select-Folder -initialPath $libRootText.Text
+  if ($null -ne $picked) {
+    $libRootText.Text = $picked
+    if ([string]::IsNullOrWhiteSpace($libExeText.Text) -or -not (Test-Path $libExeText.Text -PathType Leaf)) {
+      $libExeText.Text = Resolve-LibreSpriteExe -rootPath $libRootText.Text -explicitExe ""
+    }
+    Save-PreviewSettings -savedRoot $libRootText.Text -savedExe $libExeText.Text
+    Update-LibreSpriteStatus
+  }
+})
+
+$libExeBrowse.Add_Click({
+  $picked = Select-ExecutableFile -title "Select LibreSprite EXE" -initialDir (Split-Path -Parent $libRootText.Text)
+  if ($null -ne $picked) {
+    $libExeText.Text = $picked
+    Save-PreviewSettings -savedRoot $libRootText.Text -savedExe $libExeText.Text
+    Update-LibreSpriteStatus
+  }
+})
+
+$cloneUpdateButton.Add_Click({
+  $editorStatus.Text = "Status: cloning/updating LibreSprite..."
+  $form.Refresh()
+  if (Ensure-LibreSpriteSource -rootPath $libRootText.Text) {
+    $libExeText.Text = Resolve-LibreSpriteExe -rootPath $libRootText.Text -explicitExe $libExeText.Text
+    $editorStatus.Text = "Status: LibreSprite source is ready."
+    Save-PreviewSettings -savedRoot $libRootText.Text -savedExe $libExeText.Text
+  } else {
+    $editorStatus.Text = "Status: failed to clone/update LibreSprite source."
+  }
+  Update-LibreSpriteStatus
+})
+
+$openSourceButton.Add_Click({
+  Ensure-Directory $libRootText.Text
+  Start-Process -FilePath "explorer.exe" -ArgumentList ('"{0}"' -f $libRootText.Text) | Out-Null
+})
+
+$launchLibreButton.Add_Click({
+  $exe = $libExeText.Text
+  $exeOk = (-not [string]::IsNullOrWhiteSpace($exe)) -and (Test-Path $exe -PathType Leaf)
+  if (-not $exeOk) {
+    $picked = Select-ExecutableFile -title "Select LibreSprite EXE" -initialDir (Split-Path -Parent $libRootText.Text)
+    if ($null -ne $picked) { $libExeText.Text = $picked; $exe = $picked }
+    $exeOk = (-not [string]::IsNullOrWhiteSpace($exe)) -and (Test-Path $exe -PathType Leaf)
+    if (-not $exeOk) {
+      [void][System.Windows.Forms.MessageBox]::Show($form, "LibreSprite executable not found. Build LibreSprite first or browse to libresprite.exe.", "LibreSprite", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+      return
+    }
+  }
+  Start-Process -FilePath $exe -WorkingDirectory (Split-Path -Parent $exe) | Out-Null
+  Update-LibreSpriteStatus
+})
+
+$editAssetButton.Add_Click({
+  try {
+    Set-EditorStatus -message "Preparing selected asset..." -busy $true
+    $selected = Ensure-SelectedAssetForEditing
+    if ($null -eq $selected) {
+      Set-EditorStatus -message "No selectable asset found." -busy $false
+      [void][System.Windows.Forms.MessageBox]::Show($form, "Select an asset in Preview first. If override is missing, reference must exist so it can be seeded.", "Editor", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+      return
+    }
+    $exe = Ensure-LibreSpriteExeAvailable
+    if ([string]::IsNullOrWhiteSpace($exe)) {
+      Set-EditorStatus -message "LibreSprite EXE unavailable." -busy $false
+      [void][System.Windows.Forms.MessageBox]::Show($form, "LibreSprite EXE not found. Use Editor > Advanced to set source/exe.", "Editor", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+      return
+    }
+    Set-EditorStatus -message "Launching LibreSprite in Advanced panel..." -busy $true
+    if (Start-EmbeddedLibreSprite -exePath $exe -assetPath $selected.Path) {
+      Set-EditorStatus -message ("Embedded LibreSprite active: {0}" -f $selected.Path) -busy $false
+      $tabControl.SelectedTab = $editorTab
+      $editorTabs.SelectedTab = $editorAdvancedTab
+    } else {
+      Set-EditorStatus -message "LibreSprite launch did not complete." -busy $false
+    }
+  } catch {
+    Set-EditorStatus -message "Advanced launch failed." -busy $false
+    [void][System.Windows.Forms.MessageBox]::Show($form, "Advanced launch failed:`n$($_.Exception.Message)", "Editor", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+  }
+})
+
+$integratedEditButton.Add_Click({
+  try {
+    if ($assetList.SelectedIndex -lt 0) {
+      [void][System.Windows.Forms.MessageBox]::Show($form, "Select an asset in the Preview tab first.", "Integrated Editor", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+      return
+    }
+    $spec = $assetSpecs[$assetList.SelectedIndex]
+    $assetPath = Get-SelectedAssetPath
+    Open-IntegratedPixelEditor -assetPath $assetPath -spec $spec
+    Set-EditorStatus -message "Mini editor ready." -busy $false
+  } catch {
+    Set-EditorStatus -message "Editor launch failed." -busy $false
+    [void][System.Windows.Forms.MessageBox]::Show($form, "Editor launch failed:`n$($_.Exception.Message)", "Editor", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+    $integratedEditorHost.Visible = $false
+    $editorHelp.Visible = $true
+  }
+})
 
 $frameSlider.Add_ValueChanged({
   $script:currentFrameIndex = $frameSlider.Value
   Update-FramePreview
 })
 
+$advancedEditorHost.Add_Resize({
+  Resize-EmbeddedLibreSprite
+})
+
 $timer.Add_Tick({
+  if (-not [string]::IsNullOrWhiteSpace($script:embeddedAssetPath) -and (Test-Path $script:embeddedAssetPath -PathType Leaf)) {
+    try {
+      $curWrite = (Get-Item $script:embeddedAssetPath).LastWriteTimeUtc
+      if ($curWrite -ne $script:embeddedAssetWriteUtc) {
+        $script:embeddedAssetWriteUtc = $curWrite
+        if ($assetList.SelectedIndex -ge 0) {
+          $selectedNow = Join-Path $overrideText.Text $assetSpecs[$assetList.SelectedIndex].RelPath
+          if ([System.StringComparer]::OrdinalIgnoreCase.Equals($selectedNow, $script:embeddedAssetPath)) {
+            Render-Selection
+          }
+        }
+      }
+    } catch {}
+  }
   if ($null -eq $script:currentSpec) { return }
+  if ($tabControl.SelectedTab -ne $previewTab) { return }
   if (-not $autoPlay.Checked) { return }
   if ($script:currentSpec.Kind -ne "strip") { return }
   if ($script:currentSpec.Frames -le 1) { return }
@@ -805,8 +1878,9 @@ $form.Add_KeyDown({
 })
 
 $form.Add_FormClosed({
+  Stop-EmbeddedLibreSprite
   Dispose-CurrentStripState
-  foreach ($pb in @($liveReference.Picture, $liveOverride.Picture, $stripReference.Picture, $stripOverride.Picture, $stripDiff.Picture, $frameReference.Picture, $frameOverride.Picture, $frameDiff.Picture)) {
+  foreach ($pb in @($liveReference.Picture, $liveOverride.Picture, $stripReference.Picture, $stripOverride.Picture, $frameReference.Picture, $frameOverride.Picture)) {
     if ($null -ne $pb.Image) { $pb.Image.Dispose(); $pb.Image = $null }
   }
 })
@@ -815,6 +1889,7 @@ if (-not (Ensure-BaselineExportAllStyles -gameRootPath $GameRoot -owner $form)) 
   $statusLabel.Text = "Baseline export failed. Use 'Ensure Baseline' after fixing exporter/build."
 }
 Set-ReferenceRootForStyle -styleName ([string]$styleCombo.SelectedItem)
+Update-LibreSpriteStatus
 
 if ($assetList.Items.Count -gt 0) {
   $startIndex = 0
@@ -831,3 +1906,4 @@ if ($assetList.Items.Count -gt 0) {
 }
 
 [void]$form.ShowDialog()
+
