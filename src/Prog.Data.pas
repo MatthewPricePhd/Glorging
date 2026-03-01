@@ -62,6 +62,41 @@ type
 
 implementation
 
+function EnumerateModAssetsRoots: TArray<string>;
+var
+  list: TStringList;
+
+  procedure AddIfExists(const aPath: string);
+  var
+    path: string;
+  begin
+    path := IncludeTrailingPathDelimiter(ExpandFileName(aPath));
+    if TDirectory.Exists(path) then
+      list.Add(path);
+  end;
+
+begin
+  list := TStringList.Create;
+  try
+    list.CaseSensitive := False;
+    list.Sorted := False;
+    list.Duplicates := dupIgnore;
+
+    AddIfExists(IncludeTrailingPathDelimiter(Consts.PathToData) + 'ModAssets\');
+    AddIfExists(Consts.AppPath + '..\Data\ModAssets\');
+    AddIfExists(Consts.AppPath + '..\..\Data\ModAssets\');
+    AddIfExists(Consts.AppPath + '..\..\..\Data\ModAssets\');
+    AddIfExists(Consts.AppPath + '..\src\Data\ModAssets\');
+    AddIfExists(Consts.AppPath + '..\..\src\Data\ModAssets\');
+
+    SetLength(Result, list.Count);
+    for var i := 0 to list.Count - 1 do
+      Result[i] := list[i];
+  finally
+    list.Free;
+  end;
+end;
+
 { TData }
 
 class constructor TData.Create;
@@ -89,49 +124,60 @@ end;
 
 class function TData.GetModAssetsRoot: string;
 var
-  candidate: string;
+  roots: TArray<string>;
 begin
   if not fModAssetsEnabled then
     Exit(string.Empty);
 
-  Result := IncludeTrailingPathDelimiter(Consts.PathToData) + 'ModAssets\';
-  if TDirectory.Exists(Result) then
-    Exit;
+  roots := EnumerateModAssetsRoots;
+  if Length(roots) = 0 then
+    Exit(string.Empty);
 
-  candidate := IncludeTrailingPathDelimiter(ExpandFileName(Consts.AppPath + '..\..\Data\ModAssets\'));
-  if TDirectory.Exists(candidate) then begin
-    Result := candidate;
-    Exit;
-  end;
+  // If a pack is selected, prefer the root that actually contains it.
+  if not fModName.IsEmpty then
+    for var root in roots do
+      if TDirectory.Exists(root + 'Packs\' + fModName + '\') then
+        Exit(root);
 
-  candidate := IncludeTrailingPathDelimiter(ExpandFileName(Consts.AppPath + '..\..\..\Data\ModAssets\'));
-  if TDirectory.Exists(candidate) then begin
-    Result := candidate;
-    Exit;
-  end;
+  Result := roots[0];
 end;
 
 class function TData.GetPathToModAssets: string;
 var
+  roots: TArray<string>;
   packPath: string;
 begin
   Result := GetModAssetsRoot;
+  if Result.IsEmpty then
+    Exit;
+
   if fModName.IsEmpty then
     Exit;
 
-  packPath := Result + 'Packs\' + fModName + '\';
-  if TDirectory.Exists(packPath) then
-    Result := packPath;
+  roots := EnumerateModAssetsRoots;
+  for var root in roots do begin
+    packPath := root + 'Packs\' + fModName + '\';
+    if TDirectory.Exists(packPath) then
+      Exit(packPath);
+  end;
 end;
 
 class procedure TData.SetModName(const aModName: string);
 var
+  roots: TArray<string>;
   candidate: string;
 begin
   candidate := aModName.Trim;
   if not candidate.IsEmpty then begin
-    var packPath := IncludeTrailingPathDelimiter(Consts.PathToData) + 'ModAssets\Packs\' + candidate + '\';
-    if not TDirectory.Exists(packPath) then
+    var found := False;
+    roots := EnumerateModAssetsRoots;
+    for var root in roots do begin
+      if TDirectory.Exists(root + 'Packs\' + candidate + '\') then begin
+        found := True;
+        Break;
+      end;
+    end;
+    if not found then
       candidate := string.Empty;
   end;
 
@@ -144,26 +190,33 @@ end;
 
 class function TData.GetAvailableModNames: TArray<string>;
 var
+  packRoot: string;
   root: string;
   dirs: TArray<string>;
+  roots: TArray<string>;
   list: TStringList;
 begin
-  root := GetModAssetsRoot + 'Packs\';
-  if not TDirectory.Exists(root) then
+  roots := EnumerateModAssetsRoots;
+  if Length(roots) = 0 then
     Exit(nil);
 
-  dirs := TDirectory.GetDirectories(root);
   list := TStringList.Create;
   try
     list.CaseSensitive := False;
     list.Sorted := True;
     list.Duplicates := dupIgnore;
 
-    for var dir in dirs do begin
-      var name := ExtractFileName(dir);
-      if name.IsEmpty then
+    for root in roots do begin
+      packRoot := root + 'Packs\';
+      if not TDirectory.Exists(packRoot) then
         Continue;
-      list.Add(name);
+      dirs := TDirectory.GetDirectories(packRoot);
+      for var dir in dirs do begin
+        var name := ExtractFileName(dir);
+        if name.IsEmpty then
+          Continue;
+        list.Add(name);
+      end;
     end;
 
     SetLength(Result, list.Count);

@@ -13,6 +13,13 @@ All overrides are loaded from disk next to the executable:
 
 If a file is not present, the built-in graphics are used.
 
+Pack-based overrides are also supported:
+
+- `Data\\ModAssets\\Packs\\<PackName>\\UI\\...`
+- `Data\\ModAssets\\Packs\\<PackName>\\Lemmings\\...`
+
+If a pack is selected, files are read from that pack first.
+
 Note on style variants:
 
 - The override path is global (`Data\\ModAssets` or selected pack), so one override set is applied across all styles.
@@ -110,8 +117,17 @@ I can convert those into compliant `anim_XX.png` / `mask_XX.png` files.
 3. Launch game and visually verify before replacing next strip.
 4. Commit in small batches so regressions are easy to isolate.
 
-## 7) Current code hooks
+## 7) Activating a pack in-game (F4)
+
+1. Put your edited files under `Data\\ModAssets\\Packs\\<PackName>\\...`.
+2. Launch the game and press `F4` on the main menu.
+3. In the options screen, press `M` (or click `Next Mod (M)`) to cycle packs.
+4. Press `Enter` to apply selection and return.
+5. Re-open `F4` to confirm the active mod shown in the screen title/status.
+
+## 8) Current code hooks
 
 - Menu background override in `src/GameScreen.Menu.pas`
 - Loading background override in `src/Form.Main.pas`
 - Lemming/mask strip overrides in `src/Styles.Base.pas`
+- Mod pack selection/discovery in `src/GameScreen.Options.pas` and `src/Prog.Data.pas`

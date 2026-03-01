@@ -8,7 +8,7 @@ interface
 
 uses
   Winapi.Windows, Winapi.Messages,
-  System.Types, System.Classes, System.SysUtils, System.IOUtils, System.Generics.Collections, System.UITypes, System.Contnrs,
+  System.Types, System.Classes, System.SysUtils, System.IOUtils, System.Generics.Collections, System.UITypes, System.Contnrs, System.Math,
   Vcl.Graphics, Vcl.Imaging.PngImage, Vcl.Controls, Vcl.StdCtrls, Vcl.ExtCtrls, Vcl.Dialogs, Vcl.Forms, Vcl.GraphUtil, Vcl.Grids,
   Base.Utils, Base.Types, Base.Bitmaps,
   Dos.Consts,
@@ -33,6 +33,7 @@ type
     fModInfoLabel: TLabelEx;
     fModPathLabel: TLabelEx;
     fModLabel: TLabelEx;
+    fModCycleButton: TButton;
     fModIndex: Integer;
     fNewStyleSelected: Boolean;
     procedure Form_KeyDown(Sender: TObject; var Key: Word; Shift: TShiftState);
@@ -40,6 +41,7 @@ type
     procedure Grid_DrawCell(Sender: TObject; aCol, aRow: Longint; aRect: TRect; aState: TGridDrawState);
     procedure Grid_CanSelectCell(Sender: TObject; aCol, aRow: Longint; var CanSelect: Boolean);
     procedure Grid_DblClick(Sender: TObject);
+    procedure ModCycleButton_Click(Sender: TObject);
     function SelectedInfoToCell(info: Consts.TStyleInformation): TPoint;
     function CoordToLevelInfo(x, y: Integer): Consts.TStyleInformation;
     function GetCurrentInfo: Consts.TStyleInformation;
@@ -150,7 +152,7 @@ begin
 
   fModPanel := TPanelEx.Create(Self);
   fModPanel.Parent := Self;
-  fModPanel.Align := alBottom;
+  fModPanel.Align := alTop;
   fModPanel.Height := Scale(108);
   fModPanel.BevelOuter := bvNone;
   fModPanel.Color := clWebDarkSlateBlue;
@@ -183,11 +185,18 @@ begin
   fModPathLabel.Font.Color := clWebLightSteelBlue;
   fModPathLabel.Font.Height := Scale(16);
 
+  fModCycleButton := TButton.Create(Self);
+  fModCycleButton.Parent := fModPanel;
+  fModCycleButton.Align := alRight;
+  fModCycleButton.Width := Scale(170);
+  fModCycleButton.Caption := 'Next Mod (M)';
+  fModCycleButton.OnClick := ModCycleButton_Click;
+
   fModLabel := TLabelEx.Create(Self);
   fModLabel.Parent := Self;
   fModLabel.AutoSize := False;
   fModLabel.Height := Scale(20);
-  fModLabel.Align := alBottom;
+  fModLabel.Align := alTop;
   fModLabel.Alignment := taCenter;
   fModLabel.Font.Color := clgray;
   fModLabel.Font.Height := fModLabel.Height - Scale(2);
@@ -195,11 +204,12 @@ begin
 
   OnKeyDown := Form_KeyDown;
   OnKeyPress := Form_KeyPress;
+  ActiveControl := fGrid;
 end;
 
 procedure TGameScreenOptions.Form_KeyDown(Sender: TObject; var Key: Word; Shift: TShiftState);
 begin
-  if (Key = Ord('M')) or (Key = Ord('m')) then
+  if (Key = Ord('M')) or (Key = Ord('m')) or (Key = VK_F4) then
     NextMod
   else if Key = VK_ESCAPE then
     DoExitScreen(False)
@@ -233,18 +243,23 @@ end;
 
 procedure TGameScreenOptions.UpdateModLabel;
 var
+  packCount: Integer;
   modText: string;
 begin
   if not Assigned(fModLabel) then
     Exit;
+  packCount := Max(0, fModList.Count - 1);
   if CurrentModName.IsEmpty then
     modText := '<Default>'
   else
     modText := CurrentModName;
-  if fModList.Count <= 1 then
-    fModLabel.Caption := App.StyleCache.GetTotalLevelCount.ToString + ' levels | Mod: ' + modText + ' (M to change, no extra packs found)'
+
+  Caption := 'Options | Mod: ' + modText;
+
+  if packCount <= 0 then
+    fModLabel.Caption := App.StyleCache.GetTotalLevelCount.ToString + ' levels | Mod: ' + modText + ' (no packs found)'
   else
-    fModLabel.Caption := App.StyleCache.GetTotalLevelCount.ToString + ' levels | Mod: ' + modText + ' (M to change)';
+    fModLabel.Caption := App.StyleCache.GetTotalLevelCount.ToString + ' levels | Mod: ' + modText + ' [' + fModIndex.ToString + '/' + (fModList.Count - 1).ToString + ']';
 
   if Assigned(fModTitleLabel) then begin
     if CurrentModName.IsEmpty then
@@ -254,10 +269,12 @@ begin
   end;
 
   if Assigned(fModInfoLabel) then begin
-    if CurrentModName.IsEmpty then
-      fModInfoLabel.Caption := 'Using Data\\ModAssets overrides. Press M to cycle packs.'
+    if packCount <= 0 then
+      fModInfoLabel.Caption := 'No mod packs detected under Data\\ModAssets\\Packs.'
+    else if CurrentModName.IsEmpty then
+      fModInfoLabel.Caption := 'Using Data\\ModAssets overrides. Press M to cycle packs, Enter to apply.'
     else
-      fModInfoLabel.Caption := 'Mod pack override active. Press M to cycle.';
+      fModInfoLabel.Caption := 'Mod pack override active. Press M to cycle, Enter to apply.';
   end;
 
   if Assigned(fModPathLabel) then
@@ -301,6 +318,12 @@ end;
 procedure TGameScreenOptions.Grid_DblClick(Sender: TObject);
 begin
   DoExitScreen(True);
+end;
+
+procedure TGameScreenOptions.ModCycleButton_Click(Sender: TObject);
+begin
+  NextMod;
+  SetFocus;
 end;
 
 procedure TGameScreenOptions.Grid_DrawCell(Sender: TObject; aCol, aRow: Longint; aRect: TRect; aState: TGridDrawState);
