@@ -1188,6 +1188,8 @@ function Open-IntegratedPixelEditor {
     $drawLabel=New-Object System.Windows.Forms.Label; $drawLabel.Text='Draw Color (used for mapping target)'; $drawLabel.AutoSize=$true; $drawLabel.ForeColor=[System.Drawing.SystemColors]::ControlText
     $drawSwatch=New-Object System.Windows.Forms.Panel; $drawSwatch.Width=120; $drawSwatch.Height=24; $drawSwatch.BorderStyle='FixedSingle'
     $drawInfo=New-Object System.Windows.Forms.Label; $drawInfo.Text=''; $drawInfo.AutoSize=$true; $drawInfo.ForeColor=[System.Drawing.SystemColors]::ControlText
+    $script:integratedDrawSwatch=$drawSwatch
+    $script:integratedDrawInfo=$drawInfo
 
     $defaultHdr=New-Object System.Windows.Forms.Label; $defaultHdr.Text='Default Palette (Strip Analysis)'; $defaultHdr.AutoSize=$true; $defaultHdr.ForeColor=[System.Drawing.SystemColors]::ControlText
     $defaultFlow=New-Object System.Windows.Forms.FlowLayoutPanel; $defaultFlow.Name='defaultFlowPalette'; $defaultFlow.AutoSize=$true; $defaultFlow.WrapContents=$true; $defaultFlow.Margin=New-Object System.Windows.Forms.Padding(0,2,0,6); $defaultFlow.Dock='Top'
@@ -1270,6 +1272,7 @@ function Open-IntegratedPixelEditor {
     $script:integratedPickedArgb=[int]$script:integratedDrawArgb
     $script:integratedHasPickedColor=$false
     $script:integratedColorSource='default'
+    $script:integratedPickerPrimary=$false
     $script:integratedPaletteCount=0
     $script:integratedDefaultColors=@()
     $script:integratedApplyReady=$false
@@ -1295,6 +1298,24 @@ function Open-IntegratedPixelEditor {
     $script:integratedMappedFilled=$mappedFilled
 
     $colorToHex={ param([System.Drawing.Color]$c) ('#{0:X2}{1:X2}{2:X2}' -f $c.R,$c.G,$c.B) }.GetNewClosure()
+    $syncActiveEditorColor={
+      param([System.Drawing.Color]$c,[string]$source)
+      $safe=[System.Drawing.Color]::FromArgb(255,[int]$c.R,[int]$c.G,[int]$c.B)
+      $script:integratedDrawColor=$safe
+      $script:lastDrawColor=$safe
+      $script:integratedDrawArgb=[int]$safe.ToArgb()
+      $script:integratedActiveMapArgb=[int]$safe.ToArgb()
+      $global:GlorgingActiveMapArgb=[int]$safe.ToArgb()
+      $global:GlorgingActiveMapR=[int]$safe.R
+      $global:GlorgingActiveMapG=[int]$safe.G
+      $global:GlorgingActiveMapB=[int]$safe.B
+      $script:integratedTargetArgb=[int]$safe.ToArgb()
+      $script:integratedPickedArgb=[int]$safe.ToArgb()
+      $drawSwatch.BackColor=$safe
+      $drawInfo.Text=("#{0:X2}{1:X2}{2:X2}" -f $safe.R,$safe.G,$safe.B)
+      try { $drawColorDialog.Color=$safe } catch {}
+      Write-PreviewLog ("PaletteActiveColor source={0} color=#{1:X2}{2:X2}{3:X2}" -f $source,$safe.R,$safe.G,$safe.B)
+    }.GetNewClosure()
     $setDrawColor={
       param([System.Drawing.Color]$c)
       try {
@@ -1308,8 +1329,8 @@ function Open-IntegratedPixelEditor {
         $global:GlorgingActiveMapB=[int]$safe.B
         $script:integratedTargetArgb=[int]$safe.ToArgb()
         $script:integratedPickedArgb=[int]$safe.ToArgb()
-        $drawSwatch.BackColor=$safe
-        $drawInfo.Text=("#{0:X2}{1:X2}{2:X2}" -f $safe.R,$safe.G,$safe.B)
+        if($script:integratedDrawSwatch -is [System.Windows.Forms.Control]){ $script:integratedDrawSwatch.BackColor=$safe }
+        if($script:integratedDrawInfo -is [System.Windows.Forms.Control]){ $script:integratedDrawInfo.Text=("#{0:X2}{1:X2}{2:X2}" -f $safe.R,$safe.G,$safe.B) }
         $script:lastDrawColor=$safe
         Write-PreviewLog ("setDrawColor => #{0:X2}{1:X2}{2:X2}" -f $safe.R,$safe.G,$safe.B)
       } catch {
@@ -1418,19 +1439,23 @@ function Open-IntegratedPixelEditor {
             }
             Write-PreviewLog ("selectMapIndex set={0}" -f $idx)
             Write-PreviewLog "DefaultStep selectMapIndex done"
-            $script:integratedDrawColor=$srcColor
-            $script:lastDrawColor=$srcColor
-            $script:integratedDrawArgb=[int]$srcColor.ToArgb()
+            $script:integratedSelectedSourceArgb=[int]$srcColor.ToArgb()
+            $script:integratedHasPickedColor=$false
+            $script:integratedColorSource='default'
+            $script:integratedPickerPrimary=$false
+            $safeSrc=[System.Drawing.Color]::FromArgb(255,[int]$srcColor.R,[int]$srcColor.G,[int]$srcColor.B)
+            $script:integratedDrawColor=$safeSrc
+            $script:lastDrawColor=$safeSrc
+            $script:integratedDrawArgb=[int]$safeSrc.ToArgb()
+            if($script:integratedDrawSwatch -is [System.Windows.Forms.Control]){ $script:integratedDrawSwatch.BackColor=$safeSrc }
+            if($script:integratedDrawInfo -is [System.Windows.Forms.Control]){ $script:integratedDrawInfo.Text=("#{0:X2}{1:X2}{2:X2}" -f $safeSrc.R,$safeSrc.G,$safeSrc.B) }
             $script:integratedActiveMapArgb=[int]$srcColor.ToArgb()
             $global:GlorgingActiveMapArgb=[int]$srcColor.ToArgb()
             $global:GlorgingActiveMapR=[int]$srcColor.R
             $global:GlorgingActiveMapG=[int]$srcColor.G
             $global:GlorgingActiveMapB=[int]$srcColor.B
-            $script:integratedTargetArgb=[int]$srcColor.ToArgb()
-            $script:integratedSelectedSourceArgb=[int]$srcColor.ToArgb()
-            $script:integratedHasPickedColor=$false
-            $script:integratedColorSource='default'
-            try { $drawColorDialog.Color=[System.Drawing.Color]::FromArgb(255,$srcColor.R,$srcColor.G,$srcColor.B) } catch {}
+            try { if($drawColorDialog -is [System.Windows.Forms.ColorDialog]){ $drawColorDialog.Color=$srcColor } } catch {}
+            Write-PreviewLog ("PaletteActiveColor source=default color=#{0:X2}{1:X2}{2:X2}" -f $srcColor.R,$srcColor.G,$srcColor.B)
             Write-PreviewLog "DefaultStep set script colors done"
             Write-PreviewLog ("DefaultSelect index={0} color=#{1:X2}{2:X2}{3:X2}" -f $idx,$srcColor.R,$srcColor.G,$srcColor.B)
             try { if($miniStatus -is [System.Windows.Forms.Control]){ $miniStatus.Text=("Selected source {0}: #{1:X2}{2:X2}{3:X2}" -f [int]$script:integratedSelectedIndex,$srcColor.R,$srcColor.G,$srcColor.B) } } catch {}
@@ -1524,6 +1549,46 @@ function Open-IntegratedPixelEditor {
             Write-PreviewLog ("CustomSelect slot={0} draw=#{1:X2}{2:X2}{3:X2}" -f $slot,$currentDraw.R,$currentDraw.G,$currentDraw.B)
             $targetColor=[System.Drawing.Color]::FromArgb(255,$currentDraw.R,$currentDraw.G,$currentDraw.B)
             Write-PreviewLog "CustomStep targetColor built"
+            $slotTag=if($s.Tag -is [System.Collections.IDictionary]){ $s.Tag } else { @{} }
+            $slotWasFilledByTag=(($slotTag -is [System.Collections.IDictionary]) -and $slotTag.ContainsKey('Filled') -and [bool]$slotTag['Filled'])
+            $emptyArgb=[System.Drawing.Color]::FromArgb(250,250,250).ToArgb()
+            $slotHasMappedUi=$false
+            try {
+              if(($s -is [System.Windows.Forms.Control]) -and ($s.Text -eq '') -and ($s.BackColor.ToArgb() -ne $emptyArgb)){
+                $slotHasMappedUi=$true
+              }
+            } catch {}
+            $slotWasFilled=($slotWasFilledByTag -or $slotHasMappedUi)
+            $pickerPrimary=[bool]$script:integratedPickerPrimary
+            $applyToSlot=($pickerPrimary -or (-not $slotWasFilled))
+            Write-PreviewLog ("CustomStep decision pickerPrimary={0} slotWasFilled={1} applyToSlot={2}" -f $pickerPrimary,$slotWasFilled,$applyToSlot)
+            if($applyToSlot){
+              $selectedColor=$targetColor
+            } else {
+              if(($slotTag -is [System.Collections.IDictionary]) -and $slotTag.ContainsKey('TargetArgb')){
+                $selectedColor=[System.Drawing.Color]::FromArgb([int]$slotTag['TargetArgb'])
+              } elseif($s -is [System.Windows.Forms.Control]){
+                $selectedColor=[System.Drawing.Color]::FromArgb(255,[int]$s.BackColor.R,[int]$s.BackColor.G,[int]$s.BackColor.B)
+              } else {
+                $selectedColor=$targetColor
+              }
+            }
+            $script:integratedHasPickedColor=$true
+            $script:integratedColorSource='custom'
+            $script:integratedPickerPrimary=$false
+            $safeTgt=[System.Drawing.Color]::FromArgb(255,[int]$selectedColor.R,[int]$selectedColor.G,[int]$selectedColor.B)
+            $script:integratedDrawColor=$safeTgt
+            $script:lastDrawColor=$safeTgt
+            $script:integratedDrawArgb=[int]$safeTgt.ToArgb()
+            if($script:integratedDrawSwatch -is [System.Windows.Forms.Control]){ $script:integratedDrawSwatch.BackColor=$safeTgt }
+            if($script:integratedDrawInfo -is [System.Windows.Forms.Control]){ $script:integratedDrawInfo.Text=("#{0:X2}{1:X2}{2:X2}" -f $safeTgt.R,$safeTgt.G,$safeTgt.B) }
+            $script:integratedActiveMapArgb=[int]$selectedColor.ToArgb()
+            $global:GlorgingActiveMapArgb=[int]$selectedColor.ToArgb()
+            $global:GlorgingActiveMapR=[int]$selectedColor.R
+            $global:GlorgingActiveMapG=[int]$selectedColor.G
+            $global:GlorgingActiveMapB=[int]$selectedColor.B
+            try { if($drawColorDialog -is [System.Windows.Forms.ColorDialog]){ $drawColorDialog.Color=$selectedColor } } catch {}
+            Write-PreviewLog ("PaletteActiveColor source=custom color=#{0:X2}{1:X2}{2:X2} applyToSlot={3}" -f $selectedColor.R,$selectedColor.G,$selectedColor.B,$applyToSlot)
             $script:integratedSelectedIndex=$slot
             $dfLoopCount=0
             if($df -is [System.Windows.Forms.FlowLayoutPanel]){ $dfLoopCount=[int]$df.Controls.Count }
@@ -1537,15 +1602,19 @@ function Open-IntegratedPixelEditor {
             }
             Write-PreviewLog ("selectMapIndex set={0}" -f $slot)
             Write-PreviewLog "CustomStep selectMapIndex done"
-            if($null -eq $s.Tag){ $s.Tag=@{} }
-            $s.Tag.Filled=$true
-            $s.Tag.TargetArgb=[int]$targetColor.ToArgb()
-            if($null -eq $script:integratedUiFilledSlots){ $script:integratedUiFilledSlots=@{} }
-            $script:integratedUiFilledSlots[$slot]=$true
-            Write-PreviewLog "CustomStep mapped tag set"
-            try { $s.BackColor=$targetColor } catch {}
-            try { $s.Text='' } catch {}
-            Write-PreviewLog "CustomStep sender ui set"
+            if($applyToSlot){
+              if($null -eq $s.Tag){ $s.Tag=@{} }
+              $s.Tag.Filled=$true
+              $s.Tag.TargetArgb=[int]$selectedColor.ToArgb()
+              if($null -eq $script:integratedUiFilledSlots){ $script:integratedUiFilledSlots=@{} }
+              $script:integratedUiFilledSlots[$slot]=$true
+              Write-PreviewLog "CustomStep mapped tag set"
+              try { $s.BackColor=$selectedColor } catch {}
+              try { $s.Text='' } catch {}
+              Write-PreviewLog "CustomStep sender ui set"
+            } else {
+              Write-PreviewLog "CustomStep select-only (filled slot, picker not primary)"
+            }
             Write-PreviewLog "CustomStep apply-check start"
             $countNow=[int]$paletteCount
             $isComplete=($countNow -gt 0)
@@ -1588,9 +1657,13 @@ function Open-IntegratedPixelEditor {
             } else {
               [System.Drawing.Color]::FromArgb(255,0,0,0)
             }
-            try { $miniStatus.Text=("Mapped #{0:X2}{1:X2}{2:X2} -> #{3:X2}{4:X2}{5:X2} ({6}/{7})" -f $srcRef.R,$srcRef.G,$srcRef.B,$targetColor.R,$targetColor.G,$targetColor.B,$filledCount,$countNow) } catch {}
+            if($applyToSlot){
+              try { $miniStatus.Text=("Mapped #{0:X2}{1:X2}{2:X2} -> #{3:X2}{4:X2}{5:X2} ({6}/{7})" -f $srcRef.R,$srcRef.G,$srcRef.B,$selectedColor.R,$selectedColor.G,$selectedColor.B,$filledCount,$countNow) } catch {}
+            } else {
+              try { $miniStatus.Text=("Selected custom color {0}: #{1:X2}{2:X2}{3:X2}" -f $slot,$selectedColor.R,$selectedColor.G,$selectedColor.B) } catch {}
+            }
             Write-PreviewLog "CustomStep status set"
-            Write-PreviewLog ("CustomSelect mapped slot={0} argb={1} filled={2}/{3}" -f $slot,[int]$targetColor.ToArgb(),$filledCount,$countNow)
+            Write-PreviewLog ("CustomSelect mapped slot={0} argb={1} filled={2}/{3} applied={4}" -f $slot,[int]$selectedColor.ToArgb(),$filledCount,$countNow,$applyToSlot)
             Write-PreviewLog "CustomStep direct-map done"
           } catch {
             Write-PreviewLog ("CustomSelect ERROR: {0}" -f $_.Exception.ToString())
@@ -1695,7 +1768,7 @@ function Open-IntegratedPixelEditor {
           $lastPaintMsg=("| pick x={0} y={1}" -f $px,$py)
         }
         elseif($fillTool.Checked){
-          $fillTarget=$srcBmp.GetPixel($px,$ay); $fillReplace=if($eraser.Checked){[System.Drawing.Color]::FromArgb(0,0,0,0)}else{[System.Drawing.Color]::FromArgb(255,[int]$drawSwatch.BackColor.R,[int]$drawSwatch.BackColor.G,[int]$drawSwatch.BackColor.B)}
+          $fillTarget=$srcBmp.GetPixel($px,$ay); $fillReplace=if($eraser.Checked){[System.Drawing.Color]::FromArgb(0,0,0,0)}else{[System.Drawing.Color]::FromArgb(255,[int]$script:integratedDrawColor.R,[int]$script:integratedDrawColor.G,[int]$script:integratedDrawColor.B)}
           if($fillTarget.ToArgb() -ne $fillReplace.ToArgb()){
             $w=[int]$spec.FrameW; $h=[int]$spec.FrameH; $baseY=[int]$framePick.Value*[int]$spec.FrameH
             $q=New-Object 'System.Collections.Generic.Queue[System.Drawing.Point]'; $seen=New-Object 'System.Collections.Generic.HashSet[int]'
@@ -1715,7 +1788,20 @@ function Open-IntegratedPixelEditor {
           $srcBmp.SetPixel($px,$ay,[System.Drawing.Color]::FromArgb(0,0,0,0)); $lastPaintMsg=("| erase x={0} y={1}" -f $px,$py)
         }
         else {
-          $paintColor=[System.Drawing.Color]::FromArgb(255,[int]$drawSwatch.BackColor.R,[int]$drawSwatch.BackColor.G,[int]$drawSwatch.BackColor.B)
+          $paintColor=$null
+          if($script:integratedDrawColor -is [System.Drawing.Color]){
+            $paintColor=[System.Drawing.Color]::FromArgb(255,[int]$script:integratedDrawColor.R,[int]$script:integratedDrawColor.G,[int]$script:integratedDrawColor.B)
+          } elseif(($global:GlorgingActiveMapR -as [int]) -or ($global:GlorgingActiveMapG -as [int]) -or ($global:GlorgingActiveMapB -as [int])){
+            $paintColor=[System.Drawing.Color]::FromArgb(255,[int]$global:GlorgingActiveMapR,[int]$global:GlorgingActiveMapG,[int]$global:GlorgingActiveMapB)
+          } elseif([int]$script:integratedSelectedSourceArgb -ne 0){
+            $srcC=[System.Drawing.Color]::FromArgb([int]$script:integratedSelectedSourceArgb)
+            $paintColor=[System.Drawing.Color]::FromArgb(255,[int]$srcC.R,[int]$srcC.G,[int]$srcC.B)
+          } else {
+            $paintColor=[System.Drawing.Color]::FromArgb(255,255,128,64)
+          }
+          $paintSource=[string]$script:integratedColorSource
+          if([string]::IsNullOrWhiteSpace($paintSource)){ $paintSource='direct' }
+          Write-PreviewLog ("PaintAction color=#{0:X2}{1:X2}{2:X2} source={3}" -f $paintColor.R,$paintColor.G,$paintColor.B,$paintSource)
           $srcBmp.SetPixel($px,$ay,$paintColor); $lastPaintMsg=("| paint x={0} y={1}" -f $px,$py)
         }
       } catch {
@@ -1824,6 +1910,7 @@ function Open-IntegratedPixelEditor {
         $script:integratedPickedArgb=[int]$picked.ToArgb()
         $script:integratedHasPickedColor=$true
         $script:integratedColorSource='picker'
+        $script:integratedPickerPrimary=$true
         Update-CustomPalette -colorToAdd $picked -savedRoot $libRootText.Text -savedExe $libExeText.Text
         Sync-CustomPaletteFromDialog -dialog $drawColorDialog -savedRoot $libRootText.Text -savedExe $libExeText.Text -preferredColor $picked
         $miniStatus.Text=('Draw color set to {0}' -f (& $colorToHex $picked))
