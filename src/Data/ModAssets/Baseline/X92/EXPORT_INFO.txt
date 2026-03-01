@@ -1,0 +1,8 @@
+Baseline ModAssets export
+GameRoot=C:\Users\Wizrd23\coding\Glorging\src\
+Style=X92
+Generated=2026-02-28 12:01:46
+
+This folder is intended for reference-side visual diff in tools/ModAssetPreview.ps1.
+menu_background.png is reconstructed from built-in MAIN.DAT brown background tiling.
+loading_background.png is a black baseline because the built-in loading screen has no dedicated image file.

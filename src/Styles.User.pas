@@ -339,7 +339,7 @@ begin
             Inc(currentSectionIndex);
             currentLevelIndex := 0;
           end;
-          if currentSectionIndex > 4 then
+          if currentSectionIndex >= 4 then
             Break;
         end;
       end;
@@ -350,6 +350,8 @@ begin
 
     // now distribute the raw LVL files.
     for var lvlFile in fLevelLVLFiles do begin
+      if currentSectionIndex >= 4 then
+        Break;
       templevelList.Add(TAnalyzedEntry.Create(currentSectionIndex, currentLevelIndex, 0, True, lvlFile));
       Inc(currentLevelIndex);
       if currentLevelIndex >= levelsPerSection then begin

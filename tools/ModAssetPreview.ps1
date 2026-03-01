@@ -51,6 +51,7 @@ function Load-PreviewSettings {
       LibreSpriteRoot = ""
       LibreSpriteExe = ""
       CustomColors = @()
+      CarryPalette = @()
       LastDrawColor = -1
     }
   }
@@ -62,10 +63,17 @@ function Load-PreviewSettings {
         try { $loadedColors += [int]$v } catch {}
       }
     }
+    $loadedCarry = @()
+    if ($null -ne $raw.CarryPalette) {
+      foreach ($v in $raw.CarryPalette) {
+        try { $loadedCarry += [int]$v } catch {}
+      }
+    }
     return [pscustomobject]@{
       LibreSpriteRoot = [string]$raw.LibreSpriteRoot
       LibreSpriteExe = [string]$raw.LibreSpriteExe
       CustomColors = $loadedColors
+      CarryPalette = $loadedCarry
       LastDrawColor = $(try { [int]$raw.LastDrawColor } catch { -1 })
     }
   } catch {
@@ -73,15 +81,25 @@ function Load-PreviewSettings {
       LibreSpriteRoot = ""
       LibreSpriteExe = ""
       CustomColors = @()
+      CarryPalette = @()
       LastDrawColor = -1
     }
   }
 }
 
 function Save-PreviewSettings {
-  param([string]$savedRoot, [string]$savedExe, [int[]]$savedCustomColors = @(), [int]$savedLastDrawColor = -1)
+  param([string]$savedRoot, [string]$savedExe, [int[]]$savedCustomColors = @(), [int[]]$savedCarryColors = @(), [int]$savedLastDrawColor = -1)
   if (-not $PSBoundParameters.ContainsKey("savedCustomColors")) {
     $savedCustomColors = $script:customPalette
+  }
+  if (-not $PSBoundParameters.ContainsKey("savedCarryColors")) {
+    if($global:GlorgingCarryPalette -is [System.Collections.IEnumerable]){
+      $savedCarryColors = @($global:GlorgingCarryPalette)
+    } elseif($script:integratedCarryPalette -is [System.Collections.IEnumerable]){
+      $savedCarryColors = @($script:integratedCarryPalette)
+    } else {
+      $savedCarryColors = @()
+    }
   }
   if ($savedLastDrawColor -lt 0 -and $null -ne $script:lastDrawColor) {
     try { $savedLastDrawColor = [System.Drawing.ColorTranslator]::ToOle($script:lastDrawColor) } catch {}
@@ -92,6 +110,7 @@ function Save-PreviewSettings {
       LibreSpriteRoot = $savedRoot
       LibreSpriteExe = $savedExe
       CustomColors = $savedCustomColors
+      CarryPalette = $savedCarryColors
       LastDrawColor = $savedLastDrawColor
     }
     ($obj | ConvertTo-Json -Depth 3) | Set-Content -Path $settingsPath -Encoding UTF8
@@ -105,6 +124,49 @@ if ($null -ne $savedSettings.CustomColors -and $savedSettings.CustomColors.Count
     try { $script:customPalette += [int]$v } catch {}
   }
 }
+
+function Get-CarryPaletteEffective {
+  $carry = @()
+  if ($global:GlorgingCarryPalette -is [System.Collections.IEnumerable]) {
+    foreach ($v in $global:GlorgingCarryPalette) {
+      try { $carry += [int]$v } catch {}
+    }
+  }
+  if ($carry.Count -gt 0) {
+    $script:integratedCarryPalette = [int[]]$carry
+    return [int[]]$carry
+  }
+  $carry = @()
+  if ($script:integratedCarryPalette -is [System.Collections.IEnumerable]) {
+    foreach ($v in $script:integratedCarryPalette) {
+      try { $carry += [int]$v } catch {}
+    }
+  }
+  if ($carry.Count -gt 0) {
+    $global:GlorgingCarryPalette = [int[]]$carry
+    return [int[]]$carry
+  }
+  try {
+    $s = Load-PreviewSettings
+    if ($null -ne $s.CarryPalette -and $s.CarryPalette.Count -gt 0) {
+      $tmp=@()
+      foreach($v in $s.CarryPalette){ try { $tmp += [int]$v } catch {} }
+      if($tmp.Count -gt 0){
+        $script:integratedCarryPalette=[int[]]$tmp
+        $global:GlorgingCarryPalette=[int[]]$tmp
+        return [int[]]$tmp
+      }
+    }
+  } catch {}
+  return @()
+}
+$script:integratedCarryPalette = @()
+if ($null -ne $savedSettings.CarryPalette -and $savedSettings.CarryPalette.Count -gt 0) {
+  foreach ($v in $savedSettings.CarryPalette) {
+    try { $script:integratedCarryPalette += [int]$v } catch {}
+  }
+}
+$global:GlorgingCarryPalette = [int[]]$script:integratedCarryPalette
 
 function Normalize-CustomPalette16 {
   param([int[]]$inputColors)
@@ -1163,7 +1225,7 @@ function Open-IntegratedPixelEditor {
     $miniStatus=New-Object System.Windows.Forms.Label; $miniStatus.Text="Editing $workingPath | Left-click/drag = paint"; $miniStatus.AutoSize=$true; $miniStatus.MaximumSize=New-Object System.Drawing.Size(480,0)
 
     $split=New-Object System.Windows.Forms.SplitContainer
-    $split.Dock='Fill'; $split.Orientation='Vertical'; $split.FixedPanel='Panel1'; $split.Panel1MinSize=300; $split.SplitterDistance=360
+    $split.Dock='Fill'; $split.Orientation='Vertical'; $split.FixedPanel='Panel1'; $split.Panel1MinSize=340; $split.SplitterDistance=410
 
     $paletteHost=New-Object System.Windows.Forms.Panel
     $paletteHost.Dock='Fill'; $paletteHost.BackColor=[System.Drawing.Color]::FromArgb(244,246,248)
@@ -1196,22 +1258,36 @@ function Open-IntegratedPixelEditor {
 
     $customHdr=New-Object System.Windows.Forms.Label; $customHdr.Text='Custom Mapping (1:1 with Default)'; $customHdr.AutoSize=$true; $customHdr.ForeColor=[System.Drawing.SystemColors]::ControlText
     $customFlow=New-Object System.Windows.Forms.FlowLayoutPanel; $customFlow.Name='customFlowPalette'; $customFlow.AutoSize=$true; $customFlow.WrapContents=$true; $customFlow.Margin=New-Object System.Windows.Forms.Padding(0,2,0,6); $customFlow.Dock='Top'
+    $palettesRow=New-Object System.Windows.Forms.TableLayoutPanel
+    $palettesRow.AutoSize=$true; $palettesRow.Dock='Top'; $palettesRow.ColumnCount=2; $palettesRow.RowCount=1
+    $palettesRow.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent,50)))
+    $palettesRow.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent,50)))
+    $defaultCol=New-Object System.Windows.Forms.FlowLayoutPanel; $defaultCol.AutoSize=$true; $defaultCol.FlowDirection='TopDown'; $defaultCol.WrapContents=$false; $defaultCol.Dock='Fill'; $defaultCol.Margin=New-Object System.Windows.Forms.Padding(0,0,6,0)
+    [void]$defaultCol.Controls.Add($defaultHdr); [void]$defaultCol.Controls.Add($defaultFlow)
+    $customCol=New-Object System.Windows.Forms.FlowLayoutPanel; $customCol.AutoSize=$true; $customCol.FlowDirection='TopDown'; $customCol.WrapContents=$false; $customCol.Dock='Fill'; $customCol.Margin=New-Object System.Windows.Forms.Padding(6,0,0,0)
+    [void]$customCol.Controls.Add($customHdr); [void]$customCol.Controls.Add($customFlow)
+    [void]$palettesRow.Controls.Add($defaultCol,0,0)
+    [void]$palettesRow.Controls.Add($customCol,1,0)
+    $carryHdr=New-Object System.Windows.Forms.Label; $carryHdr.Text='Carry-Over Palette (from last Apply)'; $carryHdr.AutoSize=$true; $carryHdr.ForeColor=[System.Drawing.SystemColors]::ControlText
+    $carryInfo=New-Object System.Windows.Forms.Label; $carryInfo.Text='Saved colors: 0'; $carryInfo.AutoSize=$true; $carryInfo.ForeColor=[System.Drawing.Color]::FromArgb(90,90,90)
+    $carryFlow=New-Object System.Windows.Forms.FlowLayoutPanel; $carryFlow.Name='carryFlowPalette'; $carryFlow.AutoSize=$true; $carryFlow.WrapContents=$true; $carryFlow.Margin=New-Object System.Windows.Forms.Padding(0,2,0,6); $carryFlow.Dock='Top'
 
     $mapInfo=New-Object System.Windows.Forms.Label; $mapInfo.Text='1) Click a default color. 2) Pick target with Draw Color picker. 3) Click matching custom box.'; $mapInfo.AutoSize=$true; $mapInfo.ForeColor=[System.Drawing.SystemColors]::ControlText; $mapInfo.MaximumSize=New-Object System.Drawing.Size(520,0)
 
-    $mapRow=New-Object System.Windows.Forms.FlowLayoutPanel; $mapRow.AutoSize=$true; $mapRow.WrapContents=$false; $mapRow.Dock='Top'
+    $mapRow=New-Object System.Windows.Forms.FlowLayoutPanel; $mapRow.AutoSize=$true; $mapRow.WrapContents=$true; $mapRow.Dock='Top'
     $analyzeBtn=New-Object System.Windows.Forms.Button; $analyzeBtn.Text='Re-analyze Strip'; $analyzeBtn.Width=108
     $clearCustomBtn=New-Object System.Windows.Forms.Button; $clearCustomBtn.Text='Clear Mapping'; $clearCustomBtn.Width=98
+    $saveCarryBtn=New-Object System.Windows.Forms.Button; $saveCarryBtn.Text='Save Default -> Carry'; $saveCarryBtn.Width=132
+    $loadCarryBtn=New-Object System.Windows.Forms.Button; $loadCarryBtn.Text='Load Carry -> Custom'; $loadCarryBtn.Width=126
     $applyMapBtn=New-Object System.Windows.Forms.Button; $applyMapBtn.Name='applyMapBtn'; $applyMapBtn.Text='Apply Map to Strip'; $applyMapBtn.Width=120; $applyMapBtn.Enabled=$false
     $script:integratedApplyButton=$applyMapBtn
     $script:integratedDefaultFlow=$defaultFlow
     $script:integratedCustomFlow=$customFlow
-    foreach($c in @($analyzeBtn,$clearCustomBtn,$applyMapBtn)){ [void]$mapRow.Controls.Add($c) }
+    foreach($c in @($analyzeBtn,$clearCustomBtn,$saveCarryBtn,$loadCarryBtn,$applyMapBtn,$saveBtn,$backBtn)){ [void]$mapRow.Controls.Add($c) }
 
     $saveRow=New-Object System.Windows.Forms.FlowLayoutPanel; $saveRow.AutoSize=$true; $saveRow.WrapContents=$false; $saveRow.Dock='Top'
-    foreach($c in @($saveBtn,$backBtn)){ [void]$saveRow.Controls.Add($c) }
 
-    foreach($c in @($pathHdr,$pathBox,$frameZoomRow,$toolHdr,$toolRow,$defaultHdr,$defaultFlow,$drawLabel,$drawSwatch,$drawInfo,$customHdr,$customFlow,$mapInfo,$mapRow,$saveRow,$miniStatus)){
+    foreach($c in @($pathHdr,$pathBox,$frameZoomRow,$toolHdr,$toolRow,$drawLabel,$drawSwatch,$drawInfo,$palettesRow,$carryHdr,$carryInfo,$carryFlow,$mapInfo,$mapRow,$miniStatus)){
       [void]$pl.Controls.Add($c)
     }
 
@@ -1225,7 +1301,7 @@ function Open-IntegratedPixelEditor {
     [void]$split.Panel2.Controls.Add($canvasHost)
     [void]$integratedEditorHost.Controls.Add($split)
 
-    foreach($b in @($prevFrameBtn,$nextFrameBtn,$zoomOutBtn,$zoomInBtn,$saveBtn,$backBtn,$analyzeBtn,$clearCustomBtn,$applyMapBtn)){
+    foreach($b in @($prevFrameBtn,$nextFrameBtn,$zoomOutBtn,$zoomInBtn,$saveBtn,$backBtn,$analyzeBtn,$clearCustomBtn,$saveCarryBtn,$loadCarryBtn,$applyMapBtn)){
       $b.UseVisualStyleBackColor=$true
       $b.FlatStyle='Standard'
       $b.ForeColor=[System.Drawing.SystemColors]::ControlText
@@ -1233,7 +1309,7 @@ function Open-IntegratedPixelEditor {
     }
 
     $applyEditorSplit = {
-      $want = [Math]::Max(300, [Math]::Min(460, [int]($integratedEditorHost.ClientSize.Width * 0.30)))
+      $want = [Math]::Max(380, [Math]::Min(560, [int]($integratedEditorHost.ClientSize.Width * 0.36)))
       $maxAllowed = [Math]::Max($split.Panel1MinSize, $split.Width - 180)
       if ($maxAllowed -gt $split.Panel1MinSize) {
         $split.SplitterDistance = [Math]::Min($want, $maxAllowed)
@@ -1276,6 +1352,7 @@ function Open-IntegratedPixelEditor {
     $script:integratedPaletteCount=0
     $script:integratedDefaultColors=@()
     $script:integratedApplyReady=$false
+    if($null -eq $script:integratedCarryPalette){ $script:integratedCarryPalette=@() }
     $drawSwatch.BackColor=$script:integratedDrawColor
     $drawColorDialog=New-Object System.Windows.Forms.ColorDialog
     $drawColorDialog.FullOpen=$true
@@ -1317,22 +1394,17 @@ function Open-IntegratedPixelEditor {
       Write-PreviewLog ("PaletteActiveColor source={0} color=#{1:X2}{2:X2}{3:X2}" -f $source,$safe.R,$safe.G,$safe.B)
     }.GetNewClosure()
     $setDrawColor={
-      param([System.Drawing.Color]$c)
+      param([System.Drawing.Color]$c,[bool]$fromPicker=$false)
       try {
         $safe=[System.Drawing.Color]::FromArgb(255,[int]$c.R,[int]$c.G,[int]$c.B)
-        $script:integratedDrawColor=$safe
-        $script:integratedDrawArgb=[int]$safe.ToArgb()
-        $script:integratedActiveMapArgb=[int]$safe.ToArgb()
-        $global:GlorgingActiveMapArgb=[int]$safe.ToArgb()
-        $global:GlorgingActiveMapR=[int]$safe.R
-        $global:GlorgingActiveMapG=[int]$safe.G
-        $global:GlorgingActiveMapB=[int]$safe.B
-        $script:integratedTargetArgb=[int]$safe.ToArgb()
-        $script:integratedPickedArgb=[int]$safe.ToArgb()
-        if($script:integratedDrawSwatch -is [System.Windows.Forms.Control]){ $script:integratedDrawSwatch.BackColor=$safe }
-        if($script:integratedDrawInfo -is [System.Windows.Forms.Control]){ $script:integratedDrawInfo.Text=("#{0:X2}{1:X2}{2:X2}" -f $safe.R,$safe.G,$safe.B) }
-        $script:lastDrawColor=$safe
-        Write-PreviewLog ("setDrawColor => #{0:X2}{1:X2}{2:X2}" -f $safe.R,$safe.G,$safe.B)
+        & $syncActiveEditorColor $safe 'picker'
+        if($fromPicker){
+          $script:integratedPickedArgb=[int]$safe.ToArgb()
+          $script:integratedHasPickedColor=$true
+          $script:integratedColorSource='picker'
+          $script:integratedPickerPrimary=$true
+        }
+        Write-PreviewLog ("setDrawColor => #{0:X2}{1:X2}{2:X2} fromPicker={3}" -f $safe.R,$safe.G,$safe.B,$fromPicker)
       } catch {
         Write-PreviewLog ("setDrawColor ERROR: {0}" -f $_.Exception.Message)
       }
@@ -1373,35 +1445,55 @@ function Open-IntegratedPixelEditor {
       return $false
     }.GetNewClosure()
     $updateApplyEnabled={
-      $count=[int]$script:integratedUiPaletteCount
-      if($count -le 0){
-        $count=[Math]::Min([int]$defaultFlow.Controls.Count,[int]$customFlow.Controls.Count)
-      }
-      $filled=if($null -ne $script:integratedUiFilledSlots){$script:integratedUiFilledSlots}else{@{}}
-      $isComplete=($count -gt 0)
-      if($isComplete){
-        for($i=0;$i -lt $count;$i++){
-          if(($filled -isnot [System.Collections.IDictionary]) -or (-not $filled.ContainsKey($i)) -or (-not [bool]$filled[$i])){ $isComplete=$false; break }
+      $count=0
+      $filledCount=0
+      foreach($ctl in @($customFlow.Controls)){
+        if($ctl -isnot [System.Windows.Forms.Button]){ continue }
+        $count++
+        $tagFilled=$false
+        $tag=$ctl.Tag
+        if(($tag -is [System.Collections.IDictionary]) -and $tag.ContainsKey('Filled')){
+          $tagFilled=[bool]$tag['Filled']
+        } elseif($null -ne $script:integratedUiFilledSlots -and ($script:integratedUiFilledSlots -is [System.Collections.IDictionary]) -and $tag -is [System.Collections.IDictionary] -and $tag.ContainsKey('Index')) {
+          $idx=[int]$tag['Index']
+          if($script:integratedUiFilledSlots.ContainsKey($idx)){ $tagFilled=[bool]$script:integratedUiFilledSlots[$idx] }
         }
+        if(-not $tagFilled){
+          try {
+            $emptyArgb=[System.Drawing.Color]::FromArgb(250,250,250).ToArgb()
+            if($ctl.BackColor.ToArgb() -ne $emptyArgb){ $tagFilled=$true }
+          } catch {}
+        }
+        if($tagFilled){ $filledCount++ }
       }
+      $isComplete=($count -gt 0 -and $filledCount -ge $count)
       $null=$setApplyEnabled.Invoke([bool]$isComplete)
-      Write-PreviewLog ("updateApplyEnabled count={0} enabled={1}" -f $count,$isComplete)
+      Write-PreviewLog ("updateApplyEnabled count={0} filled={1} enabled={2}" -f $count,$filledCount,$isComplete)
     }.GetNewClosure()
     $invokeUpdateApplyEnabled={
       if($updateApplyEnabled -is [scriptblock]){
         $null=$updateApplyEnabled.Invoke()
         return
       }
-      $count=[Math]::Min([int]$defaultFlow.Controls.Count,[int]$customFlow.Controls.Count)
-      $filled=if(($script:integratedUiFilledSlots -is [System.Collections.IDictionary])){$script:integratedUiFilledSlots}else{@{}}
-      $isComplete=($count -gt 0)
-      if($isComplete){
-        for($i=0;$i -lt $count;$i++){
-          if((-not $filled.ContainsKey($i)) -or (-not [bool]$filled[$i])){ $isComplete=$false; break }
+      $count=0
+      $filledCount=0
+      foreach($ctl in @($customFlow.Controls)){
+        if($ctl -isnot [System.Windows.Forms.Button]){ continue }
+        $count++
+        $tagFilled=$false
+        $tag=$ctl.Tag
+        if(($tag -is [System.Collections.IDictionary]) -and $tag.ContainsKey('Filled')){ $tagFilled=[bool]$tag['Filled'] }
+        if(-not $tagFilled){
+          try {
+            $emptyArgb=[System.Drawing.Color]::FromArgb(250,250,250).ToArgb()
+            if($ctl.BackColor.ToArgb() -ne $emptyArgb){ $tagFilled=$true }
+          } catch {}
         }
+        if($tagFilled){ $filledCount++ }
       }
+      $isComplete=($count -gt 0 -and $filledCount -ge $count)
       $null=$setApplyEnabled.Invoke([bool]$isComplete)
-      Write-PreviewLog ("invokeUpdateApplyEnabled fallback count={0} enabled={1}" -f $count,$isComplete)
+      Write-PreviewLog ("invokeUpdateApplyEnabled fallback count={0} filled={1} enabled={2}" -f $count,$filledCount,$isComplete)
     }.GetNewClosure()
     $refreshSelectionVisuals={ }.GetNewClosure()
     $renderDefaultPalette={
@@ -1531,6 +1623,11 @@ function Open-IntegratedPixelEditor {
             $r=[int]$global:GlorgingActiveMapR
             $g=[int]$global:GlorgingActiveMapG
             $b=[int]$global:GlorgingActiveMapB
+            if([bool]$script:integratedPickerPrimary -and ($script:integratedDrawColor -is [System.Drawing.Color])){
+              $r=[int]$script:integratedDrawColor.R
+              $g=[int]$script:integratedDrawColor.G
+              $b=[int]$script:integratedDrawColor.B
+            }
             Write-PreviewLog ("CustomStep activeRGB=({0},{1},{2}) activeMapArgbGlobal={3} activeMapArgbScript={4}" -f $r,$g,$b,[int]$global:GlorgingActiveMapArgb,[int]$script:integratedActiveMapArgb)
             if($r -eq 0 -and $g -eq 0 -and $b -eq 0){
               if(($null -ne $s.Tag) -and ($null -ne $s.Tag.SourceArgb)){
@@ -1554,7 +1651,7 @@ function Open-IntegratedPixelEditor {
             $emptyArgb=[System.Drawing.Color]::FromArgb(250,250,250).ToArgb()
             $slotHasMappedUi=$false
             try {
-              if(($s -is [System.Windows.Forms.Control]) -and ($s.Text -eq '') -and ($s.BackColor.ToArgb() -ne $emptyArgb)){
+              if(($s -is [System.Windows.Forms.Control]) -and ($s.BackColor.ToArgb() -ne $emptyArgb)){
                 $slotHasMappedUi=$true
               }
             } catch {}
@@ -1673,6 +1770,88 @@ function Open-IntegratedPixelEditor {
         [void]$customFlow.Controls.Add($btn)
       }
     }.GetNewClosure()
+    $renderCarryPalette={
+      foreach($ctl in @($carryFlow.Controls)){$ctl.Dispose()}
+      $carryFlow.Controls.Clear()
+      $carry=@(Get-CarryPaletteEffective)
+      $carryType='<null>'
+      if($null -ne $script:integratedCarryPalette){ $carryType=$script:integratedCarryPalette.GetType().FullName }
+      Write-PreviewLog ("CarryRender count={0} type={1}" -f $carry.Count,$carryType)
+      if($carry.Count -eq 0){
+        $carryInfo.Text='Saved colors: 0'
+        $lbl=New-Object System.Windows.Forms.Label
+        $lbl.AutoSize=$true
+        $lbl.Text='(empty - apply a map to capture colors)'
+        $lbl.ForeColor=[System.Drawing.Color]::FromArgb(120,120,120)
+        [void]$carryFlow.Controls.Add($lbl)
+        return
+      }
+      $carryInfo.Text=("Saved colors: {0}" -f $carry.Count)
+      for($i=0;$i -lt $carry.Count;$i++){
+        $btn=New-Object System.Windows.Forms.Button
+        $btn.Width=22; $btn.Height=22; $btn.Margin=New-Object System.Windows.Forms.Padding(2)
+        $btn.FlatStyle='Flat'; $btn.TabStop=$false; $btn.UseVisualStyleBackColor=$false
+        $btn.FlatAppearance.BorderColor=[System.Drawing.Color]::FromArgb(90,90,90); $btn.FlatAppearance.BorderSize=1
+        $btn.BackColor=[System.Drawing.Color]::FromArgb([int]$carry[$i]); $btn.Text=''
+        $btn.Tag=[int]$i
+        $btn.Cursor=[System.Windows.Forms.Cursors]::Hand
+        $btn.Add_MouseDown({
+          param($s,$e)
+          if($e.Button -ne [System.Windows.Forms.MouseButtons]::Left){ return }
+          try {
+            $c=[System.Drawing.Color]::FromArgb(255,$s.BackColor.R,$s.BackColor.G,$s.BackColor.B)
+            $script:integratedColorSource='carry'
+            $script:integratedPickerPrimary=$false
+            $script:integratedDrawColor=$c
+            $script:lastDrawColor=$c
+            $script:integratedDrawArgb=[int]$c.ToArgb()
+            $global:GlorgingActiveMapArgb=[int]$c.ToArgb()
+            $global:GlorgingActiveMapR=[int]$c.R
+            $global:GlorgingActiveMapG=[int]$c.G
+            $global:GlorgingActiveMapB=[int]$c.B
+            if($script:integratedDrawSwatch -is [System.Windows.Forms.Control]){ $script:integratedDrawSwatch.BackColor=$c }
+            if($script:integratedDrawInfo -is [System.Windows.Forms.Control]){ $script:integratedDrawInfo.Text=("#{0:X2}{1:X2}{2:X2}" -f $c.R,$c.G,$c.B) }
+            try { if($drawColorDialog -is [System.Windows.Forms.ColorDialog]){ $drawColorDialog.Color=$c } } catch {}
+            try { $miniStatus.Text=("Carry color selected: #{0:X2}{1:X2}{2:X2}" -f $c.R,$c.G,$c.B) } catch {}
+            Write-PreviewLog ("CarrySelect index={0} color=#{1:X2}{2:X2}{3:X2}" -f [int]$s.Tag,$c.R,$c.G,$c.B)
+          } catch {}
+        }.GetNewClosure())
+        [void]$carryFlow.Controls.Add($btn)
+      }
+    }.GetNewClosure()
+    $loadCarryToCustom={
+      $carry=@(Get-CarryPaletteEffective)
+      Write-PreviewLog ("CarryLoad request count={0}" -f $carry.Count)
+      if($carry.Count -eq 0){
+        $miniStatus.Text='No carry-over palette saved yet. Apply a map first.'
+        return
+      }
+      for($i=0;$i -lt $customFlow.Controls.Count;$i++){
+        $ctl=$customFlow.Controls[$i]
+        if($ctl -isnot [System.Windows.Forms.Button]){ continue }
+        if($null -eq $ctl.Tag){ $ctl.Tag=@{} }
+        $ctl.Tag.Filled=$false
+        $ctl.Tag.TargetArgb=0
+        $ctl.BackColor=[System.Drawing.Color]::FromArgb(250,250,250)
+        $ctl.Text=' '
+      }
+      $script:integratedUiFilledSlots=@{}
+      $limit=[Math]::Min($carry.Count,$customFlow.Controls.Count)
+      for($i=0;$i -lt $limit;$i++){
+        $ctl=$customFlow.Controls[$i]
+        if($ctl -isnot [System.Windows.Forms.Button]){ continue }
+        $c=[System.Drawing.Color]::FromArgb([int]$carry[$i])
+        if($null -eq $ctl.Tag){ $ctl.Tag=@{} }
+        $ctl.Tag.Filled=$true
+        $ctl.Tag.TargetArgb=[int]$c.ToArgb()
+        $ctl.BackColor=$c
+        $ctl.Text=''
+        $script:integratedUiFilledSlots[$i]=$true
+      }
+      $null=$invokeUpdateApplyEnabled.Invoke()
+      $miniStatus.Text=("Loaded carry-over palette into custom mapping ({0}/{1} slots)." -f $limit,$customFlow.Controls.Count)
+      Write-PreviewLog ("CarryLoadToCustom loaded={0} totalCustom={1}" -f $limit,$customFlow.Controls.Count)
+    }.GetNewClosure()
 
     $analyzePalette={
       Write-PreviewLog "AnalyzeStrip clicked"
@@ -1718,6 +1897,7 @@ function Open-IntegratedPixelEditor {
       $mapInfo.Text='1) Click a default color. 2) Pick target with Draw Color picker. 3) Click matching custom box.'
       & $renderDefaultPalette
       & $renderCustomPalette
+      & $renderCarryPalette
       $null=$invokeUpdateApplyEnabled.Invoke()
       $miniStatus.Text="Palette analyzed: $($defaultPalette.Count) colors from all $editFrameCount frame(s), source=current strip."
       Write-PreviewLog ("AnalyzeStrip result colors={0}" -f $defaultPalette.Count)
@@ -1888,6 +2068,19 @@ function Open-IntegratedPixelEditor {
       }
       & $render
       $script:integratedMapApplied=$true
+      $carryNew=@()
+      for($i=0;$i -lt $cpApply.Count;$i++){
+        $dstTag=$cpApply[$i].Tag
+        if(($dstTag -is [System.Collections.IDictionary]) -and $dstTag.ContainsKey('TargetArgb') -and $dstTag.ContainsKey('Filled') -and [bool]$dstTag['Filled']){
+          $carryNew += [int]$dstTag.TargetArgb
+        }
+      }
+      $script:integratedCarryPalette=$carryNew
+      $script:integratedCarryPalette=[int[]]$script:integratedCarryPalette
+      $global:GlorgingCarryPalette=[int[]]$script:integratedCarryPalette
+      Write-PreviewLog ("CarryAssign from apply count={0}" -f $script:integratedCarryPalette.Count)
+      & $renderCarryPalette
+      try { Save-PreviewSettings -savedRoot $libRootText.Text -savedExe $libExeText.Text -savedCarryColors $script:integratedCarryPalette } catch {}
       for($i=0;$i -lt $cpApply.Count;$i++){
         $dstTag=$cpApply[$i].Tag
         if(($dstTag -is [System.Collections.IDictionary]) -and $dstTag.ContainsKey('TargetArgb')){
@@ -1896,10 +2089,59 @@ function Open-IntegratedPixelEditor {
         }
       }
       $miniStatus.Text="Applied map across strip. Pixels changed: $changed"
-      Write-PreviewLog ("ApplyMap changed={0} mapEntries={1} applyEnabledNow={2}" -f $changed,$colorMap.Count,($getApplyEnabled.Invoke()))
+      Write-PreviewLog ("ApplyMap changed={0} mapEntries={1} carryCount={2} applyEnabledNow={3}" -f $changed,$colorMap.Count,$carryNew.Count,($getApplyEnabled.Invoke()))
     }.GetNewClosure())
 
     $analyzeBtn.Add_Click({ & $analyzePalette }.GetNewClosure())
+    $saveCarryBtn.Add_Click({
+      $carryDefault=@()
+      $customCount=0
+      $customFilled=0
+      foreach($ctl in @($customFlow.Controls)){
+        if($ctl -isnot [System.Windows.Forms.Button]){ continue }
+        $customCount++
+        $tag=$ctl.Tag
+        $isFilled=$false
+        $targetArgb=0
+        if(($tag -is [System.Collections.IDictionary]) -and $tag.ContainsKey('Filled')){ $isFilled=[bool]$tag['Filled'] }
+        if(($tag -is [System.Collections.IDictionary]) -and $tag.ContainsKey('TargetArgb')){ $targetArgb=[int]$tag['TargetArgb'] }
+        if($isFilled){
+          $customFilled++
+          $carryDefault += [int]$targetArgb
+        } else {
+          break
+        }
+      }
+      # Fallback: use default palette when custom mapping is not filled.
+      if($customCount -eq 0 -or $customFilled -ne $customCount){
+        $carryDefault=@()
+        foreach($ctl in @($defaultFlow.Controls)){
+          if($ctl -isnot [System.Windows.Forms.Button]){ continue }
+          try {
+            $c=[System.Drawing.Color]::FromArgb(255,[int]$ctl.BackColor.R,[int]$ctl.BackColor.G,[int]$ctl.BackColor.B)
+            $carryDefault += [int]$c.ToArgb()
+          } catch {}
+        }
+        if($carryDefault.Count -eq 0){
+          foreach($c in $defaultPalette){
+            try { $carryDefault += [int]$c } catch {}
+          }
+        }
+      }
+      $script:integratedCarryPalette=[int[]]$carryDefault
+      $global:GlorgingCarryPalette=[int[]]$script:integratedCarryPalette
+      Write-PreviewLog ("CarryAssign from default count={0}" -f $script:integratedCarryPalette.Count)
+      & $renderCarryPalette
+      try { Save-PreviewSettings -savedRoot $libRootText.Text -savedExe $libExeText.Text -savedCarryColors $script:integratedCarryPalette } catch {}
+      if($customCount -gt 0 -and $customFilled -eq $customCount){
+        $miniStatus.Text=("Saved custom mapping to carry-over ({0} colors)." -f $carryDefault.Count)
+      } else {
+        $miniStatus.Text=("Saved default palette to carry-over ({0} colors)." -f $carryDefault.Count)
+      }
+      $previewHead=if($carryDefault.Count -gt 0){ [string]::Join(',',@($carryDefault | Select-Object -First 4)) } else { '<empty>' }
+      Write-PreviewLog ("CarrySaveFromDefault count={0} head={1}" -f $carryDefault.Count,$previewHead)
+    }.GetNewClosure())
+    $loadCarryBtn.Add_Click({ & $loadCarryToCustom }.GetNewClosure())
 
     $clearCustomBtn.Add_Click({
       for($i=0;$i -lt $defaultPalette.Count;$i++){ $mappedTargets[$i]=0; $mappedFilled[$i]=$false }
@@ -1919,17 +2161,7 @@ function Open-IntegratedPixelEditor {
       $res=Show-ColorDialogSafe -dialog $drawColorDialog -owner $form
       if($res -eq [System.Windows.Forms.DialogResult]::OK){
         $picked=[System.Drawing.Color]::FromArgb(255,$drawColorDialog.Color.R,$drawColorDialog.Color.G,$drawColorDialog.Color.B)
-        & $setDrawColor $picked
-        $script:integratedDrawArgb=[int]$picked.ToArgb()
-        $script:integratedActiveMapArgb=[int]$picked.ToArgb()
-        $global:GlorgingActiveMapArgb=[int]$picked.ToArgb()
-        $global:GlorgingActiveMapR=[int]$picked.R
-        $global:GlorgingActiveMapG=[int]$picked.G
-        $global:GlorgingActiveMapB=[int]$picked.B
-        $script:integratedPickedArgb=[int]$picked.ToArgb()
-        $script:integratedHasPickedColor=$true
-        $script:integratedColorSource='picker'
-        $script:integratedPickerPrimary=$true
+        & $setDrawColor $picked $true
         Update-CustomPalette -colorToAdd $picked -savedRoot $libRootText.Text -savedExe $libExeText.Text
         Sync-CustomPaletteFromDialog -dialog $drawColorDialog -savedRoot $libRootText.Text -savedExe $libExeText.Text -preferredColor $picked
         $miniStatus.Text=('Draw color set to {0}' -f (& $colorToHex $picked))
@@ -1962,6 +2194,7 @@ function Open-IntegratedPixelEditor {
 
     & $applyEditorSplit
     & $setDrawColor $script:integratedDrawColor
+    & $renderCarryPalette
     & $analyzePalette
     & $render
     Start-Sleep -Milliseconds 40

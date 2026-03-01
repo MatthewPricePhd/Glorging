@@ -1,0 +1,11 @@
+﻿[2026-03-01 12:45:28.218] Open-IntegratedPixelEditor start asset=C:\Users\Wizrd23\coding\glorging\src\Data\ModAssets\Packs\Glorging\Lemmings\anim_00.png
+[2026-03-01 12:45:28.501] setDrawColor => #FFFF80
+[2026-03-01 12:45:28.501] AnalyzeStrip clicked
+[2026-03-01 12:45:28.628] AnalyzeStrip result colors=4
+[2026-03-01 12:45:30.094] DefaultMouseDown tag=0 button=Left
+[2026-03-01 12:45:30.094] DefaultStep idx=0
+[2026-03-01 12:45:30.094] DefaultStep argb=-10076669
+[2026-03-01 12:45:31.611] CustomMouseDown tag=0 button=Left
+[2026-03-01 12:45:31.614] CustomStep slot=0
+[2026-03-01 12:45:31.617] CustomSelect slot=0 draw=#000000
+[2026-03-01 12:45:31.617] CustomStep targetColor built
